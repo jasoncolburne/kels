@@ -244,6 +244,8 @@ Under the order-independent rule, A's gossip-arriving competing event is accepte
 
 Any of these landing in a divergent set with another non-archiving privileged event (or with a competing event of the same kind) produces Contested.
 
+**Archiving privileged events at the same boundary.** The chain-state effect (divergent set → Contested) extends to archiving privileged events — `Rec` on KEL, `Rpr` on SEL — when two of them compete at the same serial with the same parent (e.g., concurrent independently-constructed `Rec` submissions on different nodes, each extending `v_{d-1}.said`). The archival semantic does not compose with a sibling archiving event: each event's archival target is the other's archival target's parent, so the two archivals contradict. Instead, both events land at `v_d` as a divergent set; the set contains two privileged events; Rule 1 (privileged-divergence-is-terminal) fires; the chain transitions to Contested. No archival occurs; both events are preserved as forensic record alongside the prior divergent set's contents.
+
 This is a structural convergence property of the doctrine, not an operator recourse pattern. Recourse against compromise is the standard recovery primitives (`Rec`/`Rpr`) or higher-level policy rotation (IEL `Evl` to exclude a compromised member; rotating the IEL itself in parent policies if the IEL identity is compromised). The order-independent rule guarantees that federation races resolve consistently across nodes; it is not advice to deliberately diverge.
 
 ##### Repair-event authorization
@@ -356,7 +358,9 @@ The anchor tier mapping (tier-1 `Ixn`, tier-2 `Rot`, tier-3 `Ror`) is structural
 - **Cross-chain anchor satisfaction redundancy.** Composing with anchor count above exact threshold (`M > N` for N-of-M) protects against single-KEL recovery invalidating IEL/SEL anchors. Without redundancy, any contributing KEL's `Rec` archiving the anchoring event drops the IEL/SEL anchor below threshold and flips `policy_satisfied = false` for consumers (see [§policy_satisfied](#policy_satisfied)).
 - **Federation IEL pattern is the canonical safe shape.** N-of-M across distinct federation members with redundancy ensures threshold-many rotation-tier compromises are infeasible without breaching multiple independent custody domains.
 
-This is operator guidance, not a verifier-enforced rule — the verifier accepts any threshold ≥ 1. The system's structural protections only bind when composition is correct.
+Composition fragility is a structural property of the policy itself, derivable by any consumer from chain data alone. The policy DSL is verifier-readable; `M` (total members) and `N` (threshold) are inspectable on every event whose authorization traces through the policy. A consumer computes the threshold buffer (`M − N`) and the per-member custody attestations available out-of-band, then degrades trust accordingly — no operator-discipline framing required.
+
+The verifier itself accepts any threshold ≥ 1: single-KEL policies are protocol-valid, and remain useful for narrow roles where a single custody domain is the deployment shape (e.g., the degenerate single-KEL identity used for node gossip bootstrap). They simply have a threshold buffer of zero and produce `policy_satisfied = false` for any IEL/SEL event whose contributing KEL has been recovered or contested. The chain mathematics surface this; consumers act on it.
 
 #### Sea-after-Upd ratchet (application pattern)
 

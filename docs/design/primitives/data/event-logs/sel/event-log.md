@@ -279,6 +279,7 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 | Linear, post-evaluation-seal | non-terminal/non-`Rpr` with valid kind-relevant auth | `ContestRequired { reason }` (algorithmic trigger; seal has advanced past submitter's view). |
 | Linear (any) | `Dec` | Insert at tip, mark decommissioned. |
 | Divergent (non-privileged), unsealed | `Rpr` | Discriminator-driven repair. Branch-tip-extending Rpr: `Rpr.previous` is a branch tip at `v_d`, Rpr extends it at `v_{d+1}`, the other branch archived. Divergence-ancestor-extending Rpr: `Rpr.previous = v_{d-1}.said`, Rpr lands at `v_d`, both branches at `v_d` archived (used when both branches are adversary-planted). `Repaired`. |
+| Linear (post-`Rpr`, seal at v_d) | `Rpr` extending `v_{d-1}.said` (same parent as the seal-defining Rpr) | Insert as divergent extension at the existing Rpr's serial (no archival — the archival semantic does not compose with a sibling archiving event); divergent set is privileged via both Rprs; privileged-divergence-is-terminal fires; chain becomes contested-terminal. |
 | Divergent (non-privileged) | non-archiving privileged event (`Sea` or `Dec`) with `previous = v_{d-1}.said` (joins divergent set via upgrade rule) | Insert as 3rd event at `v_d`; chain becomes contested-terminal. |
 | Divergent (non-privileged) | other events (`Upd`/`Sea`/`Dec`) | `RepairRequired`. Chain unchanged. |
 | Contested | any | Rejected with `ContestedSel`. |

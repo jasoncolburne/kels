@@ -239,9 +239,9 @@ On a divergent KEL, the merge engine routes submissions per the divergent-set st
 | Divergent set state | Recovery path | Termination path | Merge engine returns for non-matching kinds |
 |---|---|---|---|
 | No recovery-revealing event in the divergent set | `Rec` (archives surviving branch) | non-archiving privileged event (`Ror`/`Dec`) extending `v_{d-1}` joins via upgrade rule | `RecoverRequired` for any non-`Rec`, non-(Ror/Dec) submission |
-| At least one recovery-revealing event in the divergent set (`Rec`/`Ror`/`Dec`) | — (recovery key already spent) | non-archiving privileged event extending `v_{d-1}` | `ContestRequired` for any non-(Ror/Dec) submission |
+| At least one recovery-revealing event in the divergent set (`Rec`/`Ror`/`Dec`) | — (recovery key already revealed; no normal archival path) | any privileged event extending `v_{d-1}` — non-archiving (`Ror`/`Dec`) joins as the contested-creating event, or a second `Rec` joins as a divergent extension (no archival; archival does not compose with a sibling archiving event) | `ContestRequired` for any non-priv submission |
 
-`ContestRequired` mirrors SEL's `ContestRequired` shape: someone has used the privileged primitive (KEL: revealed the recovery key; SEL: advanced the seal), and safe normal-flow continuation is no longer possible. The trigger is structurally the same across primitives.
+`ContestRequired` mirrors SEL's `ContestRequired` shape: someone has used the privileged primitive (KEL: revealed the recovery key; SEL: advanced the seal), and safe normal-flow continuation is no longer possible. The trigger is structurally the same across primitives. Any privileged submission (archiving or non-archiving) extending `v_{d-1}` admits as a divergent extension → Contested via privileged-divergence-is-terminal.
 
 ### Effective SAID for contested
 
@@ -285,11 +285,13 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 | Linear, normal append at tip+1 | non-terminal events | Append. `Accepted`, `divergedAt: None`. |
 | Linear, overlap at earlier serial (non-privileged events only) | non-recovery events | Insert forking event; chain transitions to Divergent (non-privileged). `Diverged (non-privileged)`, `divergedAt: Some(d)`. |
 | Linear (active) | batch ending in `Ror` or `Dec` (`previous = v_{d-1}.said`) | Insert; creates divergence at `v_d` (existing tip + new event); privileged-divergence rule fires; chain becomes contested-terminal. `Contested`. |
-| Linear, overlap, recovery revealed in existing branch | non-(Ror/Dec) events | `ContestRequired`. |
+| Linear, overlap, recovery revealed in existing branch | non-priv events | `ContestRequired`. |
+| Linear, overlap, recovery revealed in existing branch | batch ending in `Rec` with `previous = v_{d-1}.said` | Insert Rec as divergent extension at the existing event's serial (no archival — the archival semantic does not compose with a sibling archiving event); divergent set is privileged via both Rec events; privileged-divergence-is-terminal fires. `Contested`. |
 | Linear, overlap | batch ending in `Rec` | Discriminator-driven recovery. Branch-tip-extending Rec: `Rec.previous` is a branch tip at `v_d`, Rec extends it at `v_{d+1}`, the other branch archived. Divergence-ancestor-extending Rec: `Rec.previous = v_{d-1}.said`, Rec lands at `v_d`, both branches at `v_d` archived (used when both branches are adversary-planted). `Recovered`. |
 | Divergent (non-privileged), no recovery revealed | non-`Rec`, non-(Ror/Dec) events | `RecoverRequired`. |
 | Divergent (non-privileged), no recovery revealed | batch ending in `Rec` | Discriminator-driven recovery. `Recovered`. |
 | Divergent (non-privileged) | batch ending in `Ror` or `Dec` (`previous = v_{d-1}.said`, joins divergent set via upgrade rule) | Insert as 3rd event at `v_d`; chain becomes contested-terminal. `Contested`. |
+| Divergent, recovery revealed in branch extension | batch ending in `Rec` with `previous = v_{d-1}.said` | Insert Rec as a third event at `v_d` (no archival — the archival semantic does not compose with a sibling archiving event in the chain); divergent set is privileged via the joining Rec; privileged-divergence-is-terminal fires. `Contested`. |
 | Linear, no conflict | batch ending in `Dec` | Insert `Dec`, mark decommissioned. `Accepted`. |
 | Contested | any submission | Rejected with `ContestedKel`. |
 | Decommissioned | non-archiving privileged event (`Ror` or `Dec`) with `previous = v_{d-1}.said` and `serial = Dec.serial` | Admitted as divergent extension at Dec's serial per [§Order-independent divergent transitions](../../../../protocol-doctrine.md#order-independent-divergent-transitions); 2-event divergent set forms (the new event + Dec); privileged-divergence-is-terminal fires; chain transitions Decommissioned → Contested. |

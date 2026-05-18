@@ -27,7 +27,7 @@ These invariants are what make synchronous archival, single-page discriminator w
 | **Contested** | Divergent set contains a non-archiving privileged event (`Ror` or `Dec`); no event of any kind lands |
 | **Decommissioned** | Exactly one `Dec`, ending a clean (linear) chain. Accepts no linear extension; admits a non-archiving privileged event with `previous = v_{d-1}.said` and `serial = Dec.serial` as a divergent extension, transitioning the chain to Contested (order-independent rule) |
 
-"Divergent with recovery revealed" is a sub-state of **Divergent** where a recovery-revealing event exists on one branch since the divergence point. Only a non-archiving privileged event (`Ror`/`Dec`) extending `v_{d-1}` is admissible; non-(Ror/Dec) submissions return `ContestRequired`.
+"Divergent with recovery revealed" is a sub-state of **Divergent** where a recovery-revealing event exists on one branch since the divergence point. Any privileged event (`Ror`, `Dec`, or a second `Rec`) extending `v_{d-1}` is admissible as a divergent extension at the existing event's serial → Contested (the divergent set is privileged via the joining event; the archival semantic of a second `Rec` does not compose with a sibling archiving event, so no archival). Non-priv submissions return `ContestRequired`.
 
 ## Local Submissions Matrix
 
@@ -37,9 +37,9 @@ What happens when a client submits events to the merge engine on a single node.
 |-----------|---------|-----|---------------|-----|
 | **Empty** | Reject (no KEL) | Reject | Reject | Reject |
 | **Active** | Append ✓ | Append ✓ (linear or contested-creating; see notes) | Append ✓ (gossip-sync of recovered KELs) | Append ✓ → Decommissioned (linear) or Contested (creates divergence at `v_d`) |
-| **Active, sealed** (`ixn`/`rot`/`ror` would land at-or-before `lastSealAdvancingEvent` in chain order) | `ContestRequired` | `ContestRequired` (linear extension); non-archiving privileged extending `v_{seal-1}` → Contested via boundary case | n/a (`Rec` cannot truncate at-or-before the seal) | `ContestRequired` (linear extension); extending `v_{seal-1}` → Contested via boundary case |
+| **Active, sealed** (`ixn`/`rot`/`ror` would land at-or-before `lastSealAdvancingEvent` in chain order) | `ContestRequired` | `ContestRequired` (linear extension); non-archiving privileged extending `v_{seal-1}` → Contested via boundary case | `ContestRequired` (linear extension); archiving Rec extending `v_{seal-1}` as a sibling of the seal-defining event → Contested via divergent extension (no archival) | `ContestRequired` (linear extension); extending `v_{seal-1}` → Contested via boundary case |
 | **Divergent** | `RecoverRequired` | `RecoverRequired` (linear); extending `v_{d-1}` → Contested via upgrade rule | Recovered ✓ (creates `RecoveryRecord`) | `RecoverRequired` (linear); extending `v_{d-1}` → Contested via upgrade rule |
-| **Divergent (recovery revealed)** | `ContestRequired` | `ContestRequired` (linear); extending `v_{d-1}` → Contested via upgrade rule | `ContestRequired` | `ContestRequired` (linear); extending `v_{d-1}` → Contested via upgrade rule |
+| **Divergent (recovery revealed)** | `ContestRequired` | `ContestRequired` (linear); extending `v_{d-1}` → Contested via upgrade rule | `ContestRequired` (linear); extending `v_{d-1}` → Contested via divergent extension (concurrent-Rec; no archival) | `ContestRequired` (linear); extending `v_{d-1}` → Contested via upgrade rule |
 | **Recovered** | Same as Active | Same as Active | Same as Active | Same as Active |
 | **Contested** | `ContestedKel` | `ContestedKel` | `ContestedKel` | `ContestedKel` |
 | **Decommissioned** | `KelDecommissioned` * | `KelDecommissioned` * | `KelDecommissioned` * | `KelDecommissioned` * |
@@ -48,8 +48,8 @@ What happens when a client submits events to the merge engine on a single node.
 
 - **Contested-state transition (linear chain)** — A non-archiving privileged event (`Ror` or `Dec`) with `previous = v_{d-1}.said` creates a 2-event divergent set at `v_d` (the new event + the existing event at `v_d`); privileged-divergence-is-terminal fires. See [event-log.md §Contested-state transitions](event-log.md#contested-state-transitions).
 - **Contested-state transition (divergent chain)** — A non-archiving privileged event with `previous = v_{d-1}.said` joins the divergent set as a third event via the upgrade rule.
-- **Active, sealed** — Non-privileged-revealing extensions return `ContestRequired`. The parent-at-(seal − 1) boundary case admits non-archiving privileged events at `event_serial = seal_serial` to trigger contested-transition; archiving `Rec` is forbidden at the boundary (would erase the seal-defining event).
-- **`Divergent (recovery revealed)` → `ContestRequired` for non-(Ror/Dec)** — once the recovery key is revealed in a divergent branch, only a non-archiving privileged event extending `v_{d-1}` can resolve (by terminating the chain). See [event-log.md §Algorithmic merge-engine triggers](event-log.md#algorithmic-merge-engine-triggers).
+- **Active, sealed** — Non-privileged-revealing extensions return `ContestRequired`. The parent-at-(seal − 1) boundary case admits non-archiving privileged events at `event_serial = seal_serial` to trigger contested-transition; archiving `Rec` at the same boundary lands as a sibling of the seal-defining event — no archival (the archival semantic does not compose with a sibling archiving event), divergent set forms, privileged-divergence-is-terminal fires → Contested. See [../../../../protocol-doctrine.md §Order-independent divergent transitions §Archiving privileged events at the same boundary](../../../../protocol-doctrine.md#order-independent-divergent-transitions).
+- **`Divergent (recovery revealed)` → `ContestRequired` for non-priv extensions; Contested for priv** — once the recovery key is revealed in a divergent branch, any privileged event (`Ror`, `Dec`, or a second `Rec`) extending `v_{d-1}` is admitted as a divergent extension at the existing event's serial → Contested. Non-priv extensions return `ContestRequired`. See [event-log.md §Algorithmic merge-engine triggers](event-log.md#algorithmic-merge-engine-triggers).
 - **\* Decommissioned exception** — a non-archiving privileged event (`Ror` or `Dec`) with `previous = v_{d-1}.said` and `serial = Dec.serial` is admitted as a divergent extension at Dec's serial; the chain transitions Decommissioned → Contested per [../../../../protocol-doctrine.md §Order-independent divergent transitions](../../../../protocol-doctrine.md#order-independent-divergent-transitions). Other submissions (including any submission extending Dec's tip or violating the locked-portion bound) are rejected with `KelDecommissioned`.
 
 ### Batch submissions
@@ -143,11 +143,13 @@ A recovery-key holder submits rec with previous = s_N.said (dual-sig satisfied):
   s_0 → ... → s_N → rec_x  (s_{N+1}; seal advances to N+1)
 
 Effect: chain stays linear; seal advances to N+1; recovery key now spent for
-this chain. Any future divergence at serial ≤ N+1 triggers ContestRequired
-because the seal-cap forbids forking at-or-before the seal. Recourse for a
-second recovery-key holder is a non-archiving privileged event (`Ror` or `Dec`)
-with previous = v_N.said (the parent of the new rec-tip at v_{N+1}); the
-event lands at v_{N+1} and triggers the contested transition.
+this chain. Any privileged event (`Ror`, `Dec`, or a second `Rec`) extending
+v_N.said arriving via gossip lands at v_{N+1} as a sibling of rec_x; the
+divergent set is privileged via the joining event (a second `Rec` does not
+archive — the archival semantic does not compose with a sibling archiving
+event); privileged-divergence-is-terminal fires; chain transitions to
+Contested. Non-priv extensions submitted at serial ≤ N+1 are rejected with
+`ContestRequired` (seal-cap).
 ```
 
 ### 2. Multiple competing events injected across nodes

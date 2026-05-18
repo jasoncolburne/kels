@@ -100,7 +100,7 @@ return Accepted
 
 Reached when events don't chain from the current tip and the KEL is not empty. Handles deduplication, divergent KELs, and overlap submissions.
 
-This handler subdivides into: §6a Dedup → §6b Divergent KEL (Rec path | non-archiving privileged event upgrades to Contested | else) → §6c Overlap (Rec batch | non-archiving privileged event creates Contested | else).
+This handler subdivides into: §6a Dedup → §6b Divergent KEL (Rec resolves to Recovered | non-archiving privileged event upgrades to Contested | concurrent Rec / Rec into recovery-revealed branch joins as divergent extension → Contested | else) → §6c Overlap (Rec batch resolves to Recovered | non-archiving privileged event creates Contested | concurrent Rec at the same serial admits as divergent extension → Contested | else).
 
 #### 6a. Deduplication
 
@@ -123,7 +123,17 @@ If the `KelVerification` shows the KEL is already divergent, the merge engine se
 ```
 if batch contains a rec event:
     if existing events reveal recovery key:
-        return ContestRequired  // Recovery key spent, contested-termination only
+        if batch ends in rec with previous = v_{d-1}.said:
+            // Concurrent-Rec: Rec joins the divergent set as a third event at v_d.
+            // No archival — the archival semantic does not compose with a sibling
+            // archiving event already in the chain. The divergent set is now privileged
+            // via the joining Rec; privileged-divergence-is-terminal fires; chain
+            // transitions to Contested. See ../../../../protocol-doctrine.md
+            // §Order-independent divergent transitions §Archiving privileged events
+            // at the same boundary.
+            insert rec as a divergent extension at v_d (no archival)
+            return Contested
+        return ContestRequired  // Recovery key spent; Rec on non-v_{d-1} parent cannot recover
     continue KEL verification with submitted events (from branch tip)
     check proactive ROR compliance
     check whether the contesting branch reveals recovery key (detailed check via find_adversary_event)
@@ -163,8 +173,17 @@ if existing events reveal recovery:
     if batch ends in a non-archiving privileged event (Ror or Dec) with previous = v_{d-1}.said:
         append all events (surviving branch + the contesting event)
         return Contested
-    else:
-        return ContestRequired  // Recovery key spent; only contested-termination remains
+    if batch ends in an archiving privileged event (Rec) with previous = v_{d-1}.said:
+        // Concurrent-Rec: incoming Rec lands at the existing Rec's serial as a divergent
+        // extension. The archival semantic does not compose with a sibling archiving event
+        // (each Rec's archival target is the other's archival target's parent); neither
+        // archives. The divergent set forms with two privileged events;
+        // privileged-divergence-is-terminal fires; chain transitions to Contested. See
+        // ../../../../protocol-doctrine.md §Order-independent divergent transitions
+        // §Archiving privileged events at the same boundary.
+        insert rec as a divergent extension at the existing event's serial (no archival)
+        return Contested
+    return ContestRequired  // Non-priv extension after recovery revealed; resubmission stale
 
 // Check for recovery in submitted events
 if batch contains rec:
@@ -249,8 +268,8 @@ Propagating a divergent KEL chain to a remote node requires more than ordering e
 
 1. **Events are sorted deterministically** by `(serial, kind_priority, said)`. Kind priority: `icp=0, dip=1, ixn=2, rot=3, ror=4, rec=5, dec=6`. The SAID tiebreaker is for determinism only; it has no semantic meaning. See §Why sort priority matters below.
 2. **Only one divergent event added** — when divergence is detected, only the first conflicting event is stored.
-3. **Recovery key revelation prevents recovery** — once a recovery-revealing event exists in a divergent branch, non-recovery submissions return `ContestRequired`; only a non-archiving privileged event extending `v_{d-1}` can resolve (by terminating the chain).
-4. **Contested-termination is the only response when the recovery key is revealed in divergence** — the chain must be terminated via a non-archiving privileged event landing in the divergent set; no further `Rec` is possible because the recovery key is no longer secret.
+3. **Recovery key revelation prevents normal recovery** — once a recovery-revealing event exists in a divergent branch, non-priv submissions return `ContestRequired`. Any privileged event (`Ror`, `Dec`, or a second `Rec`) extending `v_{d-1}.said` is admitted as a divergent extension at the existing event's serial; the divergent set is privileged and the chain transitions to Contested via privileged-divergence-is-terminal. The archival semantic of a second `Rec` does not compose with a sibling archiving event already in the chain, so neither archives — the divergent set is the chain-state effect.
+4. **Contested-termination is the structural outcome of further privileged submission after recovery is revealed** — the chain becomes Contested regardless of which privileged kind lands. A second `Rec` produces the same chain-state effect as `Ror` or `Dec` extending `v_{d-1}`. Order-independent across nodes.
 5. **Contested KELs are fully terminal** — no event of any kind lands after the contested transition. Decommissioned KELs accept no linear extension; a non-archiving privileged event (`Ror` or `Dec`) with `previous = v_{d-1}.said` and `serial = Dec.serial` is admitted as a divergent extension and transitions the chain Decommissioned → Contested (order-independent rule — see [../../../../protocol-doctrine.md §Order-independent divergent transitions](../../../../protocol-doctrine.md#order-independent-divergent-transitions)).
 6. **Branch-scoped verifier input on `Rec`** — Rec verification is branch-scoped, not chain-scoped. The walker's running state never carries the divergent set across the archival boundary. See §Branch-scoped Rec verification below.
 

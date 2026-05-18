@@ -131,6 +131,18 @@ let is_sealed       =
     divergenceAncestor.is_some() && last_seal_advancing_event_is_at_or_after(divergenceAncestor);
 
 if is_repair:
+    if existing chain has an Rpr at the incoming-Rpr's would-be-landed serial
+       AND incoming Rpr extends the same parent (i.e., lands as sibling):
+        // Concurrent-Rpr — archival semantic does not compose with a sibling
+        // archiving event (each Rpr's archival target is the other's archival
+        // target's parent). Admit incoming Rpr as a divergent extension at the
+        // existing Rpr's serial; no archival; divergent set forms with two
+        // privileged events; privileged-divergence-is-terminal fires; chain
+        // transitions to Contested. See ../../../../protocol-doctrine.md
+        // §Order-independent divergent transitions §Archiving privileged
+        // events at the same boundary.
+        insert Rpr as divergent extension at the existing Rpr's serial (no archival)
+        return Contested
     if is_divergent and is_sealed → reject ContestRequired
                                     (can't truncate behind the seal)
     else                          → repair path (truncate_and_replace)
@@ -246,7 +258,7 @@ For unrecovered divergence (no terminal in either branch — possible on SEL dur
 1. **Events are sorted deterministically** — by `(serial, kind_priority, said)`. SAID tiebreaker has no semantic meaning but ensures identical ordering across all nodes.
 2. **Only one divergent event added** — when divergence is detected, only the first conflicting event is stored.
 3. **Governance-evaluation events are bounded** — proactive evaluation (`MAX_NON_EVALUATION_EVENTS = 63`) caps non-evaluation runs; the next event after 63 must be `Sea`/`Rpr`/`Dec`.
-4. **Repair cannot truncate at or before the evaluation seal** — `truncate_and_replace` rejects fork-points at-or-before `lastSealAdvancingEvent` in chain order.
+4. **Repair cannot truncate at or before the evaluation seal** — `truncate_and_replace` rejects fork-points at-or-before `lastSealAdvancingEvent` in chain order. The convergence variant: when the incoming Rpr would land as a sibling of an existing archiving privileged event (same parent, same serial), the routing admits it as a divergent extension at the existing event's serial — no archival, no truncation; the privileged divergent set transitions the chain to Contested via Rule 1.
 5. **Contested is fully terminal; Decommissioned admits one divergent extension** — once the chain is Contested, no submission of any kind is accepted. Decommissioned accepts no linear extension; a non-archiving privileged event (`Sea` or `Dec`) with `previous = v_{d-1}.said` and `serial = Dec.serial` is admitted as a divergent extension and transitions the chain Decommissioned → Contested via the [order-independent rule](../../../../protocol-doctrine.md#order-independent-divergent-transitions).
 6. **Authorization is consumer-side** — the server does NOT verify anchor signatures on submit. Consumers verify the anchoring model when they use the data.
 7. **Inception is permissionless but bounded by batch rule** — Icp alone is rejected; `[Icp, Est, ...]` is the minimum legal inception batch.
