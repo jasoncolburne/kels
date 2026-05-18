@@ -250,7 +250,7 @@ Cnt is privileged (governance-authorized). Its presence in any divergent set tri
 
 **Distinction from Rpr.** Cnt and the divergence-ancestor-extending Rpr shape (Rpr extending `v_{d-1}` at `v_d`) share the same parent shape but have different effects. The divergence-ancestor-extending Rpr archives the existing events at `v_d` via the discriminator → chain becomes non-divergent with Rpr as the new `v_d` event (repair; chain continues). Cnt does NOT archive — it joins the existing divergent set as a 3rd event at `v_d`, privileged-divergence-is-terminal fires, chain becomes contested-terminal (chain ends). Submitting `Cnt` with `previous = v_{d-1}.said` creates a contest; submitting `Rpr` with `previous = v_{d-1}.said` creates a divergence-ancestor-extending repair.
 
-See [../../../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
+See [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) for the doctrinal frame.
 
 Authorization is the same IEL-resolved `governancePolicy` required to accept `v_{tip}` — i.e., the policy resolved through `v_{tip-1}`'s `ielEvent` binding (which resolves to whichever IEL event was current when `v_{tip-1}` landed). Authorization failure is HARD — a `Cnt` whose anchor does not satisfy the resolved governancePolicy is rejected by the verifier; the chain stays at its prior state. Operator discipline (advancing the live branch's tip `ielEvent` via `Sea` after IEL governance evolves) keeps the resolved policy current.
 

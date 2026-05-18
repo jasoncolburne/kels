@@ -226,7 +226,7 @@ Contest is the terminal state for authority conflict — the recovery key has be
 
 ### Cnt mechanics
 
-`Cnt.previous = v_{tip-1}.said` — a unifying parent rule across linear and divergent chain shapes. See [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the canonical statement and worked scenarios.
+`Cnt.previous = v_{tip-1}.said` — a unifying parent rule across linear and divergent chain shapes. See [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) for the canonical statement and worked scenarios.
 
 KEL-specific notes:
 

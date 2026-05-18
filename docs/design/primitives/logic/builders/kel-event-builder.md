@@ -2,7 +2,7 @@
 
 **Canonical name:** `KelEventBuilder`
 
-Constructs structurally-valid KEL events (`Icp`, `Dip`, `Ixn`, `Rot`, `Ror`, `Rec`, `Cnt`, `Dec`), wiring `previous`, `serial`, forward-key commitments (`rotationHash`, `recoveryHash`), and dual signatures on the recovery-revealing kinds. Used by [`SadEventBuilder`](sad-event-builder.md) and by callers that need to produce KEL events directly.
+Constructs structurally-valid KEL events (`Icp`, `Dip`, `Ixn`, `Rot`, `Ror`, `Rec`, `Cnt`, `Dec`), wiring `previous`, `serial`, forward-key commitments (`rotationHash`, `recoveryHash`), and dual signatures on the recovery-revealing kinds. Used by callers that need to produce KEL events directly.
 
 **Consumers:** SAD event builder; CLI; identity service; recovery and ROR ceremonies.
 

@@ -70,7 +70,7 @@ Read in order: [events.md](primitives/data/event-logs/sel/events.md) → [event-
 
 Code abstractions consumed by the runtime services. Read after the data primitives — these are downstream of the chain semantics and are best understood once the chain model is internalized. Each subdirectory holds one stub per primitive, organized by role:
 
-- [`logic/builders/`](primitives/logic/builders/) — event construction: `SadEventBuilder`, `KelEventBuilder`, `IelEventBuilder`, `SelEventBuilder`.
+- [`logic/builders/`](primitives/logic/builders/) — construction: `SadObjectBuilder` (SAD wrapper objects), `KelEventBuilder`, `IelEventBuilder`, `SelEventBuilder` (per-chain events).
 - [`logic/verifiers/`](primitives/logic/verifiers/) — chain walkers and authorization checkers: `KelVerifier`, `IelVerifier`, `SelVerifier`, `AnchoredPolicyChecker`.
 - [`logic/resolvers/`](primitives/logic/resolvers/) — chain-state resolution: `IelResolver`, `PolicyResolver`, `AddressResolver`.
 - [`logic/stores/`](primitives/logic/stores/) — SAD persistence: `SadStore` trait, `CascadingSadStore`, `RemoteSadStore`, `FileSadStore`, `InMemorySadStore`, `PostgresSadStore`.

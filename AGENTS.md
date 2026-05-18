@@ -19,7 +19,7 @@ For any gap, deviation, or design choice: does it preserve or strengthen tamper-
 
 - **Compromise is permanent — protocol authority is current-state-only.** Authority over a chain belongs only to its currently-tracked state; past keys, past policies, and past endorsers have zero structural ability to act once supplanted. (Example: a KEL signing key rotated out cannot `Cnt` the chain even if the adversary still holds it.) See [docs/design/protocol-doctrine.md §Compromise is Permanent](docs/design/protocol-doctrine.md#compromise-is-permanent).
 
-- **`Cnt` is the protocol-level termination event; its parent is `v_{tip-1}`.** A unifying parent rule across linear and divergent chain shapes — `Cnt` extends the parent of the chain's current tip and lands at the tip's serial, structurally shared cross-node. On KEL specifically, this preserves operator recourse against signing-key-only Rot takeover. See [docs/design/protocol-doctrine.md §Privileged Divergence is Terminal](docs/design/protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly).
+- **`Cnt` is the protocol-level termination event; its parent is `v_{tip-1}`.** A unifying parent rule across linear and divergent chain shapes — `Cnt` extends the parent of the chain's current tip and lands at the tip's serial, structurally shared cross-node. On KEL specifically, this preserves operator recourse against signing-key-only Rot takeover. See [docs/design/protocol-doctrine.md §Privileged Divergence is Terminal](docs/design/protocol-doctrine.md#privileged-divergence-is-terminal).
 
 - **Forks are seal-bounded.** A new event's serial must land at-or-after the chain's most-recent privileged-non-terminal event (`lastSealAdvancingEvent`). The bound is protocol-enforced on KEL/SEL via proactive caps; on IEL every non-terminal event advances the seal so there is no post-seal window, and stale-policy hygiene is operator-side via `Evl`. See [docs/design/protocol-doctrine.md §Forks are Seal-Bounded](docs/design/protocol-doctrine.md#forks-are-seal-bounded).
 
@@ -34,7 +34,7 @@ For any gap, deviation, or design choice: does it preserve or strengthen tamper-
 
   The expensive case is contesting an **IEL at the root of a dependency tree** — partition identity hierarchies so any single contest has bounded blast radius. See [docs/design/protocol-doctrine.md §Adversary Patience and Policy Redundancy](docs/design/protocol-doctrine.md#adversary-patience-and-policy-redundancy).
 
-- **Federation convergence.** Gossip propagation + deterministic effective-SAID resolution ensures every chain converges on the same semantic state across all nodes. Load-bearing for `Cnt Overrides Dec`, the upgrade rule, and end-verifiability over data-from-any-source. Single-node deployments forfeit this property. See [docs/design/protocol-doctrine.md §Federation Convergence](docs/design/protocol-doctrine.md#federation-convergence).
+- **Federation convergence.** Gossip propagation + deterministic effective-SAID resolution ensures every chain converges on the same semantic state across all nodes. Load-bearing for the upgrade rule and end-verifiability over data-from-any-source. Single-node deployments forfeit this property. See [docs/design/protocol-doctrine.md §Federation Convergence](docs/design/protocol-doctrine.md#federation-convergence).
 
 ## Build & Verify
 
