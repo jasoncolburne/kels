@@ -48,8 +48,8 @@ What happens when a client submits events to the merge engine on a single node.
 
 - **Contested-state transition on an Active (non-sealed) chain** — A non-archiving privileged event (`Ror` or `Dec`) with `previous = v_{d-1}.said` creates a 2-event divergent set at `v_d` (the new event + the existing non-privileged event at `v_d`); privileged-divergence-is-terminal fires. See [event-log.md §Contested-state transitions](event-log.md#contested-state-transitions).
 - **Contested-state transition via upgrade rule (divergent chain, recovery not yet revealed)** — A non-archiving privileged event with `previous = v_{d-1}.said` joins a non-privileged divergent set at `v_d` as a third event → Contested. Once any recovery-revealing event lands and advances the seal past `v_d`, the seal-cap rejects further extensions of `v_{d-1}`.
-- **Active, sealed and Divergent (recovery revealed)** — the seal-cap (`parent_serial >= seal_serial`) rejects every submission whose parent sits in the locked portion. All extensions of `v_{seal-1}` / `v_{d-1}` return `ContestRequired`.
-- **Decommissioned** — fully terminal. All submissions return `KelDecommissioned`. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
+- **Active, sealed and Divergent (recovery revealed)** — the seal-cap (`parent_serial >= seal_serial`) rejects every submission whose parent sits in the locked portion. All extensions of `v_{seal-1}` / `v_{d-1}` return `ContestRequired`. When the rejected submission originated from another federation peer's locally-landed priv event (concurrent priv-vs-priv race), the chain does not structurally converge with that peer; federation-level convergence resolves at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205)). The per-race-shape enumeration is in [§Race matrix](#race-matrix) below.
+- **Decommissioned** — fully terminal. All submissions return `KelDecommissioned`. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [#205](https://github.com/jasoncolburne/kels/issues/205) and [§Race matrix](#race-matrix) below).
 
 ### Batch submissions
 
@@ -298,6 +298,21 @@ Gossip propagates:
 ```
 
 Federation-level convergence in this scenario is provided at the infrastructure layer via a contested-prefix table that nodes maintain and gossip-sync; see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205) for the design. The seal-cap stays unconditional; relaxing it to admit competing events at a sealed serial would re-open a stale-authority killswitch surface.
+
+## Race matrix
+
+Enumeration of concurrent priv-vs-priv races between federation peers, both submitting privileged events extending the same parent `v_{d-1}` to different nodes. Each event lands as a linear-chain extension on its submitting node and advances the local seal; gossip then delivers each event to the other node, where the seal-cap rejects it (parent in locked portion). The chain does not structurally converge at the protocol layer; federation-level convergence is provided at the infrastructure layer via the contested-prefix table (see [#205](https://github.com/jasoncolburne/kels/issues/205)).
+
+| Race kind  | Receiving-node state at gossip arrival | Outcome |
+|------------|----------------------------------------|---------|
+| Rec-vs-Rec | Active-sealed (Rec at `v_d`) | `ContestRequired`; non-converging; #205 |
+| Rec-vs-Ror | Active-sealed (Rec/Ror at `v_d`) | `ContestRequired`; non-converging; #205 |
+| Rec-vs-Dec | Active-sealed / Decommissioned | `ContestRequired` / `KelDecommissioned`; non-converging; #205 |
+| Ror-vs-Ror | Active-sealed (Ror at `v_d`) | `ContestRequired`; non-converging; #205 |
+| Ror-vs-Dec | Active-sealed / Decommissioned | `ContestRequired` / `KelDecommissioned`; non-converging; #205 |
+| Dec-vs-Dec | Decommissioned | `KelDecommissioned`; non-converging; #205 |
+
+The matrix is symmetric in race participants — `Rec-vs-Ror` covers both `Rec` arriving at a node with `Ror` and `Ror` arriving at a node with `Rec`. The receiving-node-state column reflects what the local chain looks like after the local first-receive has landed; the outcome describes the gossip-arriving event's rejection.
 
 ## References
 

@@ -64,8 +64,8 @@ Additional rejection cases that don't fit per-state cells:
 - **Contested-state transition on an Active (non-sealed) chain** — A non-archiving privileged event (`Sea` or `Dec`) with `previous = v_{d-1}.said` creates a 2-event divergent set at `v_d` (the new event + the existing non-privileged event at `v_d`); privileged-divergence-is-terminal fires. On `Active, sealed`, the seal-cap rejects this construction (parent in locked portion). See [event-log.md §Contested-state transitions](event-log.md#contested-state-transitions).
 - **Contested-state transition (divergent chain)** — A non-archiving privileged event with `previous = v_{d-1}.said` joins the divergent set as a third event via the upgrade rule.
 - **`Sea` / `Upd` `ContestRequired` on Active, sealed** — non-terminal, non-`Rpr` event at-or-before `lastSealAdvancingEvent` would re-evaluate the seal; the submitter must accept the new state, decommission via `Dec`, or abandon. See [merge.md §`ContestRequired` algorithmic trigger](merge.md#contestrequired-algorithmic-trigger).
-- **`Rpr` on Active, sealed (seal-defining Rpr at v_d)** — `Rpr.previous = v_{seal-1}.said` cannot truncate (archival would erase the seal-defining event); the seal-cap / locked-portion bound rejects with `ContestRequired`. Federation-level convergence for the concurrent-Rpr race is handled at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent-Rec/Rpr races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal)).
-- **Decommissioned** — fully terminal. All submissions return `DecommissionedSel`. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
+- **Active, sealed and Divergent (sealed) — all kinds extending `v_{seal-1}` / `v_{d-1}`** — the seal-cap rejects every submission whose parent sits in the locked portion. When the rejected submission originated from another federation peer's locally-landed priv event (concurrent priv-vs-priv race — `Sea-vs-Sea`, `Sea-vs-Dec`, `Rpr-vs-Rpr`, `Rpr-vs-Sea`, etc.), the chain does not structurally converge with that peer; federation-level convergence resolves at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205)). The per-race-shape enumeration is in [§Race matrix](#race-matrix) below.
+- **Decommissioned** — fully terminal. All submissions return `DecommissionedSel`. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [#205](https://github.com/jasoncolburne/kels/issues/205) and [§Race matrix](#race-matrix) below).
 
 ### Batch submissions
 
@@ -435,6 +435,21 @@ Gossip propagates:
 ```
 
 Federation-level convergence in this scenario is provided at the infrastructure layer via a contested-prefix table that nodes maintain and gossip-sync; see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205) for the design. The seal-cap stays unconditional; relaxing it to admit competing events at a sealed serial would re-open a stale-authority killswitch surface.
+
+## Race matrix
+
+Enumeration of concurrent priv-vs-priv races between federation peers, both submitting privileged events extending the same parent `v_{d-1}` to different nodes. Each event lands as a linear-chain extension on its submitting node and advances the local seal; gossip then delivers each event to the other node, where the seal-cap rejects it (parent in locked portion). The chain does not structurally converge at the protocol layer; federation-level convergence is provided at the infrastructure layer via the contested-prefix table (see [#205](https://github.com/jasoncolburne/kels/issues/205)).
+
+| Race kind  | Receiving-node state at gossip arrival | Outcome |
+|------------|----------------------------------------|---------|
+| Rpr-vs-Rpr | Active-sealed (Rpr at `v_d`) | `ContestRequired`; non-converging; #205 |
+| Rpr-vs-Sea | Active-sealed (Rpr/Sea at `v_d`) | `ContestRequired`; non-converging; #205 |
+| Rpr-vs-Dec | Active-sealed / Decommissioned | `ContestRequired` / `DecommissionedSel`; non-converging; #205 |
+| Sea-vs-Sea | Active-sealed (Sea at `v_d`) | `ContestRequired`; non-converging; #205 |
+| Sea-vs-Dec | Active-sealed / Decommissioned | `ContestRequired` / `DecommissionedSel`; non-converging; #205 |
+| Dec-vs-Dec | Decommissioned | `DecommissionedSel`; non-converging; #205 |
+
+The matrix is symmetric in race participants — `Rpr-vs-Sea` covers both `Rpr` arriving at a node with `Sea` and `Sea` arriving at a node with `Rpr`. The receiving-node-state column reflects what the local chain looks like after the local first-receive has landed; the outcome describes the gossip-arriving event's rejection.
 
 ## References
 

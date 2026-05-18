@@ -48,8 +48,9 @@ What happens when a client submits events to the submit handler on a single node
 
 - **`Dec` on Active** — Dec terminates the chain rather than extending it; routes to decommission.
 - **Overlap creates Contested** — a non-Dec event chaining from earlier than the linear tip creates a 2-event divergent set at `v_d`; privileged-divergence-is-terminal fires immediately, transitioning the chain to contested-terminal. There is no recoverable intermediate state — IEL has no `Rpr`.
+- **Active, sealed `ContestRequired`** — the seal-cap rejects every submission whose parent sits at-or-before `v_{seal-1}`. When the rejected submission originated from another federation peer's locally-landed priv event (concurrent priv-vs-priv race — `Evl-vs-Evl`, `Evl-vs-Dec`, etc.), the chain does not structurally converge with that peer; federation-level convergence resolves at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205)). The per-race-shape enumeration is in [§Race matrix](#race-matrix) below.
 - **Contested (= Divergent) IEL → `ContestedIel` everywhere** — contested-terminal accepts no further events of any kind. There is no upgrade path because there's no non-privileged-divergent state to upgrade from on IEL (every IEL event is privileged). See [event-log.md §Divergence is Contested-Terminal](event-log.md#divergence-is-contested-terminal).
-- **Decommissioned IEL → `IelDecommissioned` everywhere.** Dec is fully terminal; the seal-cap rejects any subsequent submission. Federation-race convergence with concurrent competing privileged submissions is handled at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
+- **Decommissioned IEL → `IelDecommissioned` everywhere.** Dec is fully terminal; the seal-cap rejects any subsequent submission. Federation-race convergence with concurrent competing privileged submissions is handled at the infrastructure layer (see [#205](https://github.com/jasoncolburne/kels/issues/205) and [§Race matrix](#race-matrix) below).
 
 ### Batch submissions
 
@@ -248,6 +249,20 @@ Gossip propagates:
 ```
 
 Federation-level convergence in this scenario is provided at the infrastructure layer via a contested-prefix table that nodes maintain and gossip-sync; see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205) for the design. The seal-cap stays unconditional; relaxing it to admit competing events at a sealed serial would re-open a stale-authority killswitch surface.
+
+## Race matrix
+
+Enumeration of concurrent priv-vs-priv races between federation peers, both submitting privileged events extending the same parent `v_{d-1}` to different nodes. Each event lands as a linear-chain extension on its submitting node and advances the local seal; gossip then delivers each event to the other node, where the seal-cap rejects it (parent in locked portion). The chain does not structurally converge at the protocol layer; federation-level convergence is provided at the infrastructure layer via the contested-prefix table (see [#205](https://github.com/jasoncolburne/kels/issues/205)).
+
+IEL has a smaller race matrix than KEL/SEL because the kind set is `Icp`, `Evl`, `Dec` (no Rec/Rpr/Sea). Icp is structurally pinned to `v_0` and cannot participate in same-parent races on a post-Icp chain.
+
+| Race kind  | Receiving-node state at gossip arrival | Outcome |
+|------------|----------------------------------------|---------|
+| Evl-vs-Evl | Active-sealed (Evl at `v_d`) | `ContestRequired`; non-converging; #205 |
+| Evl-vs-Dec | Active-sealed / Decommissioned | `ContestRequired` / `IelDecommissioned`; non-converging; #205 |
+| Dec-vs-Dec | Decommissioned | `IelDecommissioned`; non-converging; #205 |
+
+The matrix is symmetric in race participants — `Evl-vs-Dec` covers both `Evl` arriving at a node with `Dec` and `Dec` arriving at a node with `Evl`. The receiving-node-state column reflects what the local chain looks like after the local first-receive has landed; the outcome describes the gossip-arriving event's rejection.
 
 ## References
 
