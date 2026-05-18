@@ -34,6 +34,6 @@ Defense against threshold compromise is a separate concern, addressed via operat
 
 ## See also
 
-- [../design/primitives/data/event-logs/iel/event-log.md §Divergence and Contest-Only Resolution](../design/primitives/data/event-logs/iel/event-log.md#divergence-and-contest-only-resolution) — the protocol mechanics that make multi-party-governance races terminal.
+- [../design/primitives/data/event-logs/iel/event-log.md §Divergence is Contested-Terminal](../design/primitives/data/event-logs/iel/event-log.md#divergence-is-contested-terminal) — the protocol mechanics that make multi-party-governance races terminal.
 - [../design/infrastructure/federation.md](../design/infrastructure/federation.md) — the federation IEL as a concrete instance of a high-stakes multi-party-governance identity; bootstrap and membership-change ceremonies use the designated-submitter pattern.
 - [enrollment](../development/enrollment.md) — application-developer side of the brand-new chain race.

@@ -267,7 +267,7 @@ Bootstrap and onboarding flows use `transfer_*_events` parameterized with the co
 
 ## Concurrent-Evl coordination
 
-The federation IEL is exposed to the same divergence risk as any IEL: two governance-authorized parties submitting concurrent `Evl` events at the same serial diverge the chain, and IEL divergence is structurally contested-terminal (see [primitives/data/event-logs/iel/event-log.md §Divergence and Contest-Only Resolution](../primitives/data/event-logs/iel/event-log.md#divergence-and-contest-only-resolution)). Federation IEL divergence is catastrophic — the federation dies under that prefix.
+The federation IEL is exposed to the same divergence risk as any IEL: two governance-authorized parties submitting concurrent `Evl` events at the same serial diverge the chain, and IEL divergence is structurally contested-terminal (see [primitives/data/event-logs/iel/event-log.md §Divergence is Contested-Terminal](../primitives/data/event-logs/iel/event-log.md#divergence-is-contested-terminal)). Federation IEL divergence is catastrophic — the federation dies under that prefix.
 
 The protocol does not prevent this. The defense is operational:
 
@@ -307,7 +307,7 @@ A contested federation IEL stays contested forever — that is the structural me
 ## References
 
 - [primitives/data/event-logs/iel/event-log.md](../primitives/data/event-logs/iel/event-log.md) — IEL chain semantics, policy immunity, divergence, contest.
-- [primitives/data/event-logs/iel/events.md](../primitives/data/event-logs/iel/events.md) — event kinds (`Icp`, `Evl`, `Sea`, `Cnt`, `Dec`).
+- [primitives/data/event-logs/iel/events.md](../primitives/data/event-logs/iel/events.md) — event kinds (`Icp`, `Evl`, `Sea`, `Dec`).
 - [protocol-doctrine.md §Federation Convergence](../protocol-doctrine.md#federation-convergence) — the cross-node convergence guarantee the federation relies on.
 - [primitives/data/event-logs/iel/event-log.md §Multi-Party Governance Synchronization](../primitives/data/event-logs/iel/event-log.md#multi-party-governance-synchronization) — out-of-band serialization of IEL `Evl` submissions.
 - [features/policy.md](../features/policy.md) — policy DSL (`threshold`, `identity`, `endorse`, immunity).

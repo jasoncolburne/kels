@@ -12,14 +12,14 @@ IEL verification ensures:
 - All events have valid self-addressing identifiers (SAIDs)
 - Events chain correctly from current state to inception via `previous` links
 - `Icp` is anchored under its declared `governancePolicy` (self-governance-endorsement — every IEL event is a governance act)
-- `Evl` / `Sea` / `Cnt` / `Dec` are anchored under the branch's tracked `governancePolicy`
+- `Evl` / `Sea` / `Dec` are anchored under the branch's tracked `governancePolicy`
 - Any policy referenced as `authPolicy` or `governancePolicy` (introduced at Icp or evolved via Evl) has `immune: true` — the verifier rejects the chain otherwise as a structural error (policy immunity rule; see [event-log.md §Evaluation Seal and Anchor Non-Poisonability](event-log.md#evaluation-seal-and-anchor-non-poisonability))
 
 Events are linked by their `previous` SAID. Serial is the position in the chain (inception is serial 0).
 
 Like SEL, IEL has no per-event signature — authorization is via the *anchoring model*: `authPolicy` and `governancePolicy` resolve to KEL prefixes whose `ixn` events anchor the IEL event's SAID. The verifier resolves these policies through a `PolicyChecker` that fetches and verifies the anchoring KEL events on demand.
 
-The verifier answers a single question: **is this chain shape structurally authentic?** Consumer trust ("should I trust authorization claims from this chain?") is a separate concern handled at the auth/policy layer through `policy_satisfied`, soft-fail propagation, and `satisfied_saids` (see [event-log.md §Divergence, Contestation, and the Trust Layer](event-log.md#divergence-contestation-and-the-trust-layer)). The verifier accepts divergent and `Cnt`'d chains as structurally valid regardless of whether the divergence arose from federation race, threshold compromise, or operator-initiated `Cnt` contestation; the trust layer applies the consumer-side semantics on top of the authenticated data.
+The verifier answers a single question: **is this chain shape structurally authentic?** Consumer trust ("should I trust authorization claims from this chain?") is a separate concern handled at the auth/policy layer through `policy_satisfied`, soft-fail propagation, and `satisfied_saids` (see [event-log.md §Divergence, Contestation, and the Trust Layer](event-log.md#divergence-contestation-and-the-trust-layer)). The verifier accepts divergent chains as structurally valid regardless of whether the divergence arose from federation race or threshold compromise; the trust layer applies the consumer-side semantics on top of the authenticated data.
 
 ## Verification Algorithm
 
@@ -55,7 +55,7 @@ verify_event(event):
         parent = lookup event.previous
         if parent.kind in {Icp, Sea}:
             return Error("Sea parent must be Evl")
-        // terminal kinds (Cnt/Dec) cannot have children; the terminal-state gate enforces.
+        // terminal kind (Dec) cannot have children; the terminal-state gate enforces.
         // back-to-back Sea is forbidden on IEL — Sea carries no content field,
         // so a Sea extending another Sea would add no semantic information beyond
         // the parent; see events.md §Per-Kind Policy Field Discipline.
@@ -89,7 +89,7 @@ verify_policy(event, branch):
         Icp           → self_satisfies(event)  // anchored under event.governancePolicy; tier-2 (Rot anchor)
         Evl           → satisfies(event, branch.trackedGovernancePolicy)  // tier-2 (Rot anchor)
         Sea           → satisfies(event, branch.trackedGovernancePolicy)  // tier-2 (Rot anchor)
-        Cnt, Dec      → satisfies(event, branch.trackedGovernancePolicy)  // tier-3 (Ror anchor)
+        Dec           → satisfies(event, branch.trackedGovernancePolicy)  // tier-3 (Ror anchor)
 
     PolicyChecker resolves the policy by SAID, then evaluates anchoring:
     each Endorse(KEL_PREFIX) and Delegate(KEL_PREFIX) leaf node in the
@@ -117,28 +117,18 @@ Policy state is **branch-tracked**. Two fields:
 
 ### Terminal-state determination and authorization
 
-All events on IEL require HARD anchor: a Cnt or Dec whose governance check fails is rejected at the verifier; the chain stays at its prior state. Structural integrity rules — SAID validity, serial monotonicity, immunity check on policy evolution — stay HARD as well.
+All events on IEL require HARD anchor: a `Dec` whose governance check fails is rejected at the verifier; the chain stays at its prior state. Structural integrity rules — SAID validity, serial monotonicity, immunity check on policy evolution — stay HARD as well.
 
-The verifier's terminal-state-determination rule simplifies to:
-- Divergent at `v_d`?
-  - No → linear (active or terminal-via-Dec).
-  - Yes → divergent set contains a privileged event (any IEL event kind: `Icp`, `Evl`, `Sea`, `Cnt`, `Dec`)?
-    - Yes → contested (terminal).
-    - No → never reached on IEL (every IEL event is privileged, so any divergent set on IEL is privileged-divergent).
+The verifier's terminal-state-determination rule on IEL is structural:
+- Divergent at `v_d`? **Yes → contested (terminal).** Every IEL event is privileged, so any divergent set on IEL contains a privileged event by construction; privileged-divergence-is-terminal fires at first 2-event observation. The "divergent-but-not-yet-contested" intermediate state doesn't arise on IEL; it exists for KEL (non-privileged Rot/Ixn divergence, recoverable via `Rec`) and SEL (non-privileged Upd divergence, recoverable via `Rpr`).
+- Linear with a `Dec` event present? Decommissioned (terminal-via-Dec).
+- Linear without `Dec`? Active.
 
-In practice on IEL, any divergence is immediately contested. The "divergent-but-not-yet-contested" intermediate state doesn't arise on IEL; it exists for KEL (non-privileged Rot/Ixn divergence, recoverable via Rec) and SEL (non-privileged Upd divergence, recoverable via Rpr).
+### Contested-state derivation
 
-### Cnt parent resolution
+On IEL, the contested chain state is derived structurally from divergence: `is_contested ⇔ is_divergent`. There is no Cnt event on IEL (see [event-log.md §Why no Rpr (and no Cnt)](event-log.md#why-no-rpr-and-no-cnt) and [../../../../protocol-doctrine.md §IEL repair-event absence](../../../../protocol-doctrine.md#privileged-divergence-is-terminal)), so the verifier sets `is_contested = true` whenever it observes a divergent set, not in response to a Cnt-kind event landing. Both accessors are exposed for cross-primitive API symmetry with KEL and SEL — `is_contested()` wraps `is_divergent()` on IEL. On KEL and SEL the two diverge: a non-privileged divergent set can be `is_divergent` without being `is_contested` until a privileged event upgrades it.
 
-Cnt's parent rule (`previous = v_{tip-1}.said`) resolves uniformly across linear and divergent chain shapes — see [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) for the cross-shape derivation and worked diagrams. IEL-specific: every IEL event advances the seal, so the chain transitions to contested-terminal at first 2-event divergence; both divergent branches are single-event at `v_d` by construction, so each branch's `v_{tip-1}` is `v_{d-1}`.
-
-Cnt is processed inline with the chain walk: when the walk reaches the generation at `v_d`, branch state holds `v_{tip-1}`'s tracked governancePolicy (set when `v_{tip-1}` was processed). Cnt is processed alongside the existing event(s) at `v_d` as siblings of the same generation, all consuming `v_{tip-1}`'s governance context. No new cache slot in branch state.
-
-### Upgrade rule: not applicable on IEL
-
-Every IEL event is privileged, so no non-privileged divergent set can form, and the upgrade-rule path does not exist. IEL divergent sets are bounded at 2 events; subsequent submissions (including any further `Evl`, `Sea`, `Cnt`, or `Dec` arriving via gossip at `v_d`) are rejected by the contested-state gate. The rule applies on KEL and SEL where non-privileged divergent sets can exist; see [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) for the cross-primitive rule and the unreachability proof for 3 events with 2+ privileged.
-
-The handler-level rejection on contested/decommissioned chains is a separate seam that prevents new submits; this verifier-level mechanism handles events that reach the verifier some other way (gossip-pulled chains where the local node hadn't yet observed the terminal, resume from a stored chain that contains a terminal, concurrent siblings within a batch that introduces a Cnt).
+The handler-level rejection on contested/decommissioned chains is a separate seam that prevents new submits; this verifier-level mechanism handles events that reach the verifier some other way (gossip-pulled chains where the local node hadn't yet observed the terminal, resume from a stored chain that contains a terminal).
 
 ### Caller-bounded SAID querying
 
@@ -161,7 +151,7 @@ IelVerification:
     prefix: Digest256
     branches: Vec<BranchTip>                 // 1 = linear, 2 = divergent
     divergenceAncestor: Option<Digest256>   // SAID of v_{d-1} on a divergent chain (None on linear)
-    is_contested: bool
+    is_contested: bool                       // derived: branches.len() > 1 (equivalent to is_divergent on IEL)
     is_decommissioned: bool
     lastSealAdvancingEvent: Option<Digest256> // SAID of most recent Evl or Sea
     queried_saids: BTreeSet<Digest256>       // caller-declared SAIDs of interest
@@ -179,7 +169,9 @@ Accessors:
 - `lastSealAdvancingEvent()` — SAID of the most recent `Evl` or `Sea` (the evaluation seal; advances on both kinds).
 - `divergenceAncestor()` — SAID of `v_{d-1}` on a divergent chain (`None` on linear).
 - `is_divergent()` — `branches.len() > 1`.
-- `is_contested()`, `is_decommissioned()`
+- `is_contested()` — equivalent to `is_divergent()` on IEL; wraps it for cross-primitive API symmetry (see §Contested-state derivation above).
+- `is_decommissioned()` — `true` when the linear branch tip is a `Dec` event (a contested chain is never additionally decommissioned, since divergence freezes the chain before any subsequent `Dec` can land).
+- `effective_tail_said()` — deterministic per-prefix SAID used for cross-node convergence. Single branch (active or terminal-via-Dec): tip event SAID. Contested (= divergent): `hash_effective_said("contested:{prefix}")`. None for the empty chain. Mirrors KEL's contested shape per `lib/kels/src/types/kel/verification.rs:142-158`; the KEL "divergent, not-yet-contested" branch has no IEL analog because divergent IEL is always contested.
 
 ## Key Properties Verified
 
@@ -193,7 +185,7 @@ Accessors:
 | Serial monotonicity | Each event's serial equals predecessor's serial + 1 |
 | Inception serial | Inception (no `previous`) must have serial 0 |
 | `governancePolicy` satisfaction at Icp | `evaluate_anchored_policy(event.governancePolicy, event.said)` (self-governance-endorsement) |
-| `governancePolicy` satisfaction | `evaluate_anchored_policy(branch.trackedGovernancePolicy, event.said)` for Evl/Sea/Cnt/Dec |
+| `governancePolicy` satisfaction | `evaluate_anchored_policy(branch.trackedGovernancePolicy, event.said)` for Evl/Sea/Dec |
 | Policy immunity | Every introduced/evolved authPolicy or governancePolicy must have `immune: true` |
 
 Note: There is no content-preservation rule (IEL has no `content` field). There is no proactive-evaluation bound (every IEL event is governance-authorized — implicit bound).
@@ -201,9 +193,9 @@ Note: There is no content-preservation rule (IEL has no `content` field). There 
 ## Divergence Handling
 
 Verification does NOT fail on divergence. Instead:
-- Divergence is detected and tracked in the `IelVerification` token (`is_divergent()`, `divergenceAncestor()`)
-- Both branches of a divergent chain are verified independently (the verifier forks `BranchState` per branch)
-- The submit handler resolves divergence via `Cnt` (see [merge.md](merge.md)). There is no `Rpr` on IEL; divergent chains stay divergent until contested.
+- Divergence is detected and tracked in the `IelVerification` token (`is_divergent()`, `divergenceAncestor()`, `is_contested()` — all equivalent on IEL).
+- Both branches of a divergent chain are verified independently (the verifier forks `BranchState` per branch).
+- Divergence is contested-terminal on IEL by the privileged-divergence-is-terminal rule (every IEL event is privileged); there is no `Rpr` or `Cnt` resolver kind. The chain stays divergent forever as forensic record; the operator's recourse is reincept under a new prefix. See [merge.md §Terminal-State Gate](merge.md#2-terminal-state-gate).
 
 ## Streaming
 
@@ -218,7 +210,7 @@ struct IelVerifier {
     branches: HashMap<Digest256, BranchState>,   // keyed by tip SAID
     last_verified_serial: Option<u64>,
     divergenceAncestor: Option<Digest256>,
-    is_contested: bool,
+    is_contested: bool,                          // derived: branches.len() > 1 (equivalent to is_divergent on IEL)
     is_decommissioned: bool,
     ...
 }
@@ -250,7 +242,7 @@ let verification = verifier.finish().await?;
 4. Previous-pointer continuity (event chains from a known branch tip)
 5. Structure validation (`validate_structure`)
 6. Topic consistency
-7. Policy satisfaction via `PolicyChecker` (`governancePolicy` for every kind — Icp anchored under its declared `governancePolicy`; Evl/Sea/Cnt/Dec anchored under the branch's tracked `governancePolicy`)
+7. Policy satisfaction via `PolicyChecker` (`governancePolicy` for every kind — Icp anchored under its declared `governancePolicy`; Evl/Sea/Dec anchored under the branch's tracked `governancePolicy`)
 8. Immunity check on policy seed/update
 
 ## Cross-Chain Use: SEL Authorization Resolution

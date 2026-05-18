@@ -120,7 +120,7 @@ SEL divergence on `Est`/`Upd` events happens at the auth-policy layer: multiple 
 
 `Rpr`'s asymmetry is purely auth-vs-governance: a higher-bar authority (governance) resolves a lower-bar fork (auth) via archival of the branch not on `Rpr.previous`'s walkback. The protocol does not distinguish "the legitimate operator" from "the adversary" — both branches were authorized under `authPolicy` when they landed; the discriminator is which branch the governance-authorized `Rpr` chose to preserve.
 
-IEL has no analog. Every IEL event is governance-authorized (`Icp` is self-endorsed; `Evl`/`Sea`/`Cnt`/`Dec` resolve against the tracked `governancePolicy`), so there is no auth-vs-governance asymmetry for `Rpr` to exploit. See [../iel/event-log.md §Why no `Rpr`](../iel/event-log.md#why-no-rpr).
+IEL has no analog. Every IEL event is governance-authorized (`Icp` is self-endorsed; `Evl`/`Sea`/`Dec` resolve against the tracked `governancePolicy`), so there is no auth-vs-governance asymmetry for `Rpr` to exploit. See [../iel/event-log.md §Why no Rpr (and no Cnt)](../iel/event-log.md#why-no-rpr-and-no-cnt).
 
 ## Repair (Rpr)
 
