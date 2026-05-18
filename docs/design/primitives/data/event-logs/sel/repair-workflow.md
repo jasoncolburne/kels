@@ -1,6 +1,6 @@
 # SEL Repair Workflow
 
-Operator-facing workflow for handling SEL transitions — divergence detection, repair, contest, decommission, and gossip propagation. SEL counterpart to [../kel/recovery-workflow.md](../kel/recovery-workflow.md).
+Operator-facing workflow for handling SEL transitions — divergence detection, repair, decommission, and gossip propagation. SEL counterpart to [../kel/recovery-workflow.md](../kel/recovery-workflow.md).
 
 ## Detection
 
@@ -9,49 +9,49 @@ A chain owner detects abnormal state via two signals:
 1. **`flush()` response carries `divergenceAncestor: Some(said)`** — the most recent submission either created a fork (owner-caused overlap) or hit a chain that was already divergent and got rejected. The builder records this on its `SelVerification` token; the owner's CLI surfaces a warning.
 2. **Effective SAID mismatch** — owner's local view differs from the gossip-published effective SAID. Owner runs `kels-cli sel get <prefix>` and compares against their `SelVerification`'s `effective_tail_said()`; mismatch indicates server-side state has advanced or diverged.
 
-Both signals route to the same recovery action: owner runs `repair`, `contest`, or `decommission` depending on the chain state.
+Both signals route to a recovery action: owner runs `repair` or `decommission` depending on the chain state.
 
 ## Trigger
 
-The builder API exposes three terminal-state operations on `SadEventBuilder`:
+The builder API exposes two terminal-state operations on `SadEventBuilder`:
 
 | Operation | When to use | Signature |
 |-----------|-------------|-----------|
-| `repair()` | Chain is divergent or owner's tip is behind server's | Bundles pending; appends `Rpr` extending owner's authentic tip |
-| `contest()` | Chain is sealed past owner's view (`ContestRequired` returned by submit) | Bundles pending; appends `Cnt`; chain becomes terminal |
-| `decommission()` | Owner is ending the chain cleanly (no conflict) | Bundles pending; appends `Dec`; chain becomes terminal |
+| `repair()` | Chain is non-privileged-divergent or owner's tip is behind server's | Bundles pending; appends `Rpr` extending owner's authentic tip |
+| `decommission()` | Owner is ending the chain | Bundles pending; appends `Dec`; chain becomes terminal |
 
-Each operation runs the same pre-flight (mirrors KEL's `recover` / `contest` / `rotate_recovery`):
+Each operation runs the same pre-flight:
 
 - Verify the server's chain via `client.verify_sel_events(prefix, checker)` — defense-in-depth against a buggy/malicious server.
 - (Repair) Derive boundary uniformly: `boundary = owner_tip.serial`. `Rpr.previous = owner_tip.said` (branch-tip-extending shape — operator preserves their branch as the survivor and archives the divergent counterpart). `Rpr` also has a divergence-ancestor-extending shape (`Rpr.previous = v_{d-1}.said`, lands at `v_d`, archives both branches at `v_d`) used when both branches at `v_d` are adversary-planted and the operator wants to replace `v_d` entirely; see [event-log.md §Repair (Rpr)](event-log.md#repair-rpr).
 - Build the appropriate event extending the bundled-pending tip (or owner's verified tip if pending is empty).
-- Submit `[pending..., Rpr/Cnt/Dec]` atomically.
+- Submit `[pending..., Rpr/Dec]` atomically.
+
+If the chain is sealed past the operator's view (`ContestRequired` returned by submit), neither `repair` nor a normal append is valid for the operator's current state. The paths are: accept the new state (pull the latest chain and re-submit at the new tip), `decommission` to end the chain cleanly, or rotate the bound IEL's governance to exclude a compromised member (out-of-band IEL `Evl`).
 
 For full algorithmic detail of the discriminator that runs server-side, see [event-log.md §Server-side discriminator](event-log.md#server-side-discriminator).
 
 ## CLI Commands
 
 ```bash
-kels-cli sel repair        --prefix <prefix>     # Resolve divergence; archives adversary events
-kels-cli sel contest       --prefix <prefix>     # Terminal contest (when ContestRequired returned)
-kels-cli sel decommission  --prefix <prefix>     # Terminal owner-initiated end
+kels-cli sel repair        --prefix <prefix>     # Resolve non-privileged divergence; archives adversary events
+kels-cli sel decommission  --prefix <prefix>     # Terminal end via Dec
 kels-cli sel get           <prefix>              # Fetch a SEL from the server (for inspection)
 kels-cli sel status        --prefix <prefix>     # Show local chain status (verification token)
 kels-cli sel list                                # List local SEL prefixes
 ```
 
-After `repair` succeeds, the chain is back to Active state and accepts normal `Upd` / `Sea` submissions. After `contest` or `decommission`, the chain is terminal — no further submissions are accepted.
+After `repair` succeeds, the chain is back to Active state and accepts normal `Upd` / `Sea` submissions. After `decommission`, the chain is Decommissioned — no linear extensions are accepted (a non-archiving privileged event with `previous = v_{d-1}.said` and `serial = Dec.serial` is admitted as a divergent extension transitioning the chain to Contested via the order-independent rule).
 
 ## Gossip Propagation
 
-When `repair`, `contest`, or `decommission` succeeds:
+When `repair` or `decommission` succeeds:
 
 1. SADStore publishes the new effective SAID to Redis (`sel_updates`).
 2. Gossip service subscribes, broadcasts an announcement on `kels/gossip/v1/topics/sel`.
 3. Peers receive the announcement, compare against their local effective SAID for the prefix.
 4. Stale peers fetch the full chain from origin via `POST /api/v1/sad/events/fetch` and submit to their local SADStore.
-5. Receiving handler observes the `Rpr` / `Cnt` / `Dec` in the batch and routes through the kind-discriminator paths described in [merge.md](merge.md). Archival (for `Rpr`) happens synchronously in the receiver's transaction.
+5. Receiving handler observes the `Rpr` / `Dec` in the batch and routes through the kind-discriminator paths described in [merge.md](merge.md). Archival (for `Rpr`) happens synchronously in the receiver's transaction.
 
 If a peer misses the gossip announcement (e.g., it was offline), the owner can submit the events directly to that peer with the same CLI commands.
 
@@ -59,7 +59,7 @@ If a peer misses the gossip announcement (e.g., it was offline), the owner can s
 
 See [../../../../protocol-doctrine.md §Operation Categories](../../../../protocol-doctrine.md#operation-categories) for the structural framing.
 
-Owner's `repair`/`contest`/`decommission` builders run `verify_sel_events` against the server's view as defense-in-depth before extending from `get_owner_tip`. A buggy/malicious server that mis-handles a divergent chain would otherwise be taken at its word; the pre-flight verification ensures the server's chain is structurally and policy-wise sound before owner signs anything that extends it.
+Owner's `repair` / `decommission` builders run `verify_sel_events` against the server's view as defense-in-depth before extending from `get_owner_tip`. A buggy/malicious server that mis-handles a divergent chain would otherwise be taken at its word; the pre-flight verification ensures the server's chain is structurally and policy-wise sound before owner signs anything that extends it.
 
 ## Operator Recovery Workflow
 
@@ -67,10 +67,10 @@ When a chain divergence is observed:
 
 1. Owner inspects: `kels-cli sel status --prefix <prefix>` shows `divergenceAncestor: Some(said)`.
 2. Owner inspects server: `kels-cli sel get <prefix>` returns the divergent branches.
-3. Owner decides:
-   - If the seal hasn't advanced past their view → run `repair`. Adversary events archived synchronously.
-   - If the seal has advanced past their view (server returned `ContestRequired`) → run `contest`. Chain becomes terminal.
-   - If the chain is no longer needed → run `decommission`.
+3. Owner decides based on chain state:
+   - **Non-privileged divergence** (Upd-Upd race or Est-Est race) with seal not advanced past their view → run `repair`. Adversary events archived synchronously.
+   - **Sealed past view** (`ContestRequired` returned by submit) → accept the new state, run `decommission`, or rotate the bound IEL's governance via IEL `Evl` (out-of-band recourse if the IEL-side governance has been compromised).
+   - **Chain no longer needed** → run `decommission`.
 4. Gossip propagates the resolution to all peer nodes.
 
 ## References

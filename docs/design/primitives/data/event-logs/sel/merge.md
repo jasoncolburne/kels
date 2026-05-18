@@ -10,8 +10,7 @@ The submit handler in `services/sadstore/src/handlers.rs::submit_sad_events` int
 - Idempotent resubmissions (dedup by SAID)
 - Divergence detection (conflicting events at the same serial)
 - Repair (`Rpr`) — discriminator-driven archival of the events on the branch not extended by `Rpr.previous`
-- Contest (`Cnt`) — terminal authority conflict, no archival
-- Decommission (`Dec`) — terminal owner-initiated end
+- Decommission (`Dec`) — terminal event ending the chain
 - Algorithmic `ContestRequired` for normal-event submissions when the seal has advanced past the submitter's view
 
 Events are linked by their `previous` SAID. Authority is via the anchoring model — the server does NOT verify signatures on submit; consumers verify when they use the data. **Authorization for v1+ events is resolved through the bound IEL** via each event's `ielEvent` field. See [event-log.md §Authorization via IEL](event-log.md#authorization-via-iel).
@@ -32,8 +31,8 @@ Server errors map to:
 | `Ok({applied: true, ...})` | Batch accepted | linear / divergent / contested / decommissioned per batch contents |
 | `ContestRequired { reason }` | Normal-event at-or-before `lastSealAdvancingEvent` in chain order (write-authorized but seal advanced past submitter's view) | unchanged |
 | `RepairRequired` | Non-Rpr submission to a divergent chain | unchanged |
-| `ContestedSel` | Submission to a chain with a `Cnt` event in it | terminal, unchanged |
-| `DecommissionedSel` | Submission (other than an overriding `Cnt`) to a chain with a `Dec` event in it | terminal, unchanged |
+| `ContestedSel` | Submission to a Contested chain (divergent set containing a non-archiving privileged event) | terminal, unchanged |
+| `DecommissionedSel` | Linear extension submission to a chain with a `Dec` event in it (non-archiving privileged event extending `Dec`'s parent at `Dec`'s serial is admitted as a divergent extension — see [event-log.md §Contested-state transitions](event-log.md#contested-state-transitions)) | terminal for linear extension |
 | `IncompleteInception` | Verifier walked a chain whose tip is `Icp` (no v1 `Est`) | unchanged (rejected) |
 | `BadIdentityBinding(reason)` | `ielEvent` does not resolve to a real IEL event with matching prefix, or fails per-event parent-monotonic check | unchanged |
 | `IelDivergent(prefix)` | Bound IEL event is on a divergent IEL branch | unchanged |
@@ -60,14 +59,14 @@ for v1+: cross-chain authorization resolution:
 
     pick the relevant policy:
         Est, Upd → IEL-resolved authPolicy at ielEvent
-        Sea/Rpr/Cnt/Dec → IEL-resolved governancePolicy at ielEvent
+        Sea/Rpr/Dec → IEL-resolved governancePolicy at ielEvent
 
     verify event.said is anchored under the resolved policy with the
     anchor kind required by the event's tier — see
     [../../../../protocol-doctrine.md §Anchor Tier Elevation](../../../../protocol-doctrine.md#anchor-tier-elevation):
         Upd       → Ixn (tier 1)
         Est, Sea  → Rot (tier 2)
-        Rpr, Cnt, Dec → Ror (tier 3)
+        Rpr, Dec  → Ror (tier 3)
     Each Endorse / Delegate leaf in the resolved policy must have an
     anchor of the required kind. Wrong-kind anchor for any leaf
     contributing to satisfaction → reject.
@@ -85,7 +84,7 @@ for Sea events: verify parent-kind constraint — Sea-Sea is allowed on SEL
                 (a stricter check than the parent-monotonic ratchet above,
                 which admits equality; equal ielEvent between
                 consecutive Seas is semantically redundant and rejected).
-                Sea forbidden after Cnt/Dec (terminal). See [events.md](events.md)
+                Sea forbidden after Dec (terminal). See [events.md](events.md)
                 for the per-kind table. Chain-state check enforced in the
                 verifier walk — validate_structure sees only the event in
                 isolation; parent-kind requires chain context.
@@ -100,27 +99,21 @@ The rule lives inside the verifier (`SelVerifier::finish_internal`): if any bran
 ### 3. Terminal-State Gate
 
 ```
-if chain has any Cnt event → reject ContestedSel
+if chain is Contested → reject ContestedSel
 if chain has any Dec event:
-    if batch is a single Cnt whose `previous` matches some `v_x.said` where
-       another event in the chain also extends `v_x` (i.e., Cnt creates or joins
-       a divergent set at `v_{x+1}` — the "other event" is `Dec` itself in Case A,
-       the pre-Dec tip in Case B):
-        // Cnt-overrides-Dec — see ../../protocol-doctrine.md §Cnt Overrides Dec.
-        // Two shapes converge to Contested:
-        //   Case A (post-Dec sequential):    Cnt.previous = Dec.previous = v_{d-1}.said;
-        //                                    Cnt lands at v_d alongside Dec.
-        //   Case B (pre-Dec true-concurrent): Cnt.previous = v_{d-1}.said matches the
-        //                                    pre-Dec tip's parent; Cnt lands at v_d
-        //                                    as sibling of the pre-Dec tip; Dec sits
-        //                                    at v_{d+1} on the surviving branch.
-        // privileged-divergence-is-terminal fires; chain becomes Contested.
-        accept and route to contest path
+    if event.previous = v_{d-1}.said AND event.serial = Dec.serial
+       AND event.kind is non-archiving privileged (Sea or Dec):
+        // Order-independent divergent transitions —
+        // see ../../../../protocol-doctrine.md §Order-independent divergent transitions.
+        // Event extends Dec's parent at Dec's serial; divergent set forms at v_d
+        // (the new event + Dec); privileged-divergence-is-terminal fires;
+        // chain transitions Decommissioned → Contested.
+        accept as divergent extension at Dec's serial
     else:
         reject DecommissionedSel
 ```
 
-Fires before all other routing. Terminal state means no further events of any kind, with the single exception of an overriding `Cnt` on a Dec'd chain.
+Fires before all other routing. Contested is fully terminal; Decommissioned accepts no linear extension, and admits one divergent extension at Dec's serial per the order-independent rule.
 
 ### 4. Deduplication
 
@@ -132,7 +125,6 @@ The handler inspects the post-dedup batch for kind discriminators and the chain'
 
 ```
 let is_repair       = new_events.iter().any(|e| e.kind.is_repair());
-let is_contest      = new_events.iter().any(|e| e.kind.is_contest());
 let is_decommission = new_events.iter().any(|e| e.kind.is_decommission());
 let is_divergent    = first_divergent_serial.is_some();
 let is_sealed       =
@@ -140,12 +132,8 @@ let is_sealed       =
 
 if is_repair:
     if is_divergent and is_sealed → reject ContestRequired
-                                    (can't truncate behind the seal; only Cnt is legal)
+                                    (can't truncate behind the seal)
     else                          → repair path (truncate_and_replace)
-elif is_contest:
-                                    → contest path (insert + mark contested)
-                                    (Cnt is legal on every non-terminal state, including
-                                     both unsealed-divergent and sealed-divergent)
 elif is_decommission:
     if is_divergent               → reject RepairRequired (unsealed) /
                                     ContestRequired (sealed)
@@ -159,12 +147,14 @@ elif normal-event
        AND event.kind is non-terminal:
                                     → reject ContestRequired (algorithmic trigger)
 elif event creates a fork (overlap):
-                                    → insert single forking event, freeze
+                                    → insert single forking event; if the divergent
+                                      set contains a non-archiving privileged event
+                                      (Sea or Dec), chain transitions to Contested
 else:
                                     → normal append
 ```
 
-The repair / contest / decommission discriminators bind to predicate methods on `SadEventKind`. Any of these kinds at any position in the batch routes to its dedicated path.
+The repair / decommission discriminators bind to predicate methods on `SadEventKind`. Any of these kinds at any position in the batch routes to its dedicated path.
 
 The sealed/unsealed predicate is computed from the **pre-batch** snapshot of `divergenceAncestor` and `lastSealAdvancingEvent`; the verifier's run on the new batch doesn't shift the predicate mid-flow. This matches the canonical [reconciliation.md §Local Submissions Matrix](reconciliation.md#local-submissions-matrix), which is the source-of-truth for cell-by-cell expected outcomes.
 
@@ -182,17 +172,11 @@ Full algorithm: [event-log.md §Server-side discriminator](event-log.md#server-s
 
 The repair path also creates `SelRepairEvent` link rows in `sel_repair_events`, providing an immutable audit trail. Archived events are queryable via the repair endpoints (`POST /api/v1/sad/events/repairs` and `.../repairs/events`).
 
-### 7. Contest Path
+### 7. Decommission Path
 
-Detected when any batch event has `kind = Cnt`. Inserts the batch (pending events first, then `Cnt`); no archival. Marks chain as contested. All future submissions return `ContestedSel`.
+Detected when any batch event has `kind = Dec`. Inserts the batch; no archival. Marks chain as decommissioned. Linear extensions return `DecommissionedSel`. A non-archiving privileged event (`Sea` or `Dec`) with `previous = v_{d-1}.said` and `serial = Dec.serial` is admitted as a divergent extension per [../../../../protocol-doctrine.md §Order-independent divergent transitions](../../../../protocol-doctrine.md#order-independent-divergent-transitions); the chain transitions Decommissioned → Contested.
 
-Contest is governance-authorized via IEL; the verifier confirms `Cnt` satisfies the IEL-resolved governancePolicy before insertion.
-
-### 8. Decommission Path
-
-Detected when any batch event has `kind = Dec`. Inserts the batch; no archival. Marks chain as decommissioned. Subsequent submissions return `DecommissionedSel`, with one exception: a `Cnt` with `previous = v_{d-1}.said` overrides `Dec` per [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec), routes through the contest path, and transitions the chain to Contested.
-
-### 9. Normal Append
+### 8. Normal Append
 
 Events chain from the current tip, no divergence, no terminal kind in batch. Inserts via `save_batch`. Returns `applied: true`.
 
@@ -214,11 +198,11 @@ This fires when an authorized non-terminal event would land at or before the eva
 
 By the time §9 runs, the new event has already passed its anchoring check upstream. The `ContestRequired` trigger combines two things: the existing-chain sanity floor (chain wasn't already broken) and the serial-vs-seal arithmetic (the new event's serial lands at-or-before the seal).
 
-This mirrors KEL's `ContestRequired` shape: someone else used the privileged primitive (KEL: revealed the recovery key; SEL: advanced the seal), and safe normal-flow continuation is no longer possible. See [event-log.md §Contest (Cnt)](event-log.md#contest-cnt).
+This mirrors KEL's `ContestRequired` shape: someone else used the privileged primitive (KEL: revealed the recovery key; SEL: advanced the seal), and safe normal-flow continuation is no longer possible. The submitter must accept the new state, decommission via `Dec`, or abandon and reincept. See [event-log.md §Algorithmic trigger — `ContestRequired`](event-log.md#algorithmic-trigger--contestrequired).
 
-### 10. Overlap (non-divergent SEL, fork-creating event)
+### 9. Overlap (non-divergent SEL, fork-creating event)
 
-When a non-Rpr/Cnt/Dec event chains from an event earlier than the current tip:
+When a non-Rpr/Dec event chains from an event earlier than the current tip:
 
 ```
 divergenceAncestor = first_branch_point.said    // the parent of v_d
@@ -250,10 +234,10 @@ Propagating a divergent SEL to a remote node requires more than canonical chain 
 `send_divergent_sel_events` (analog of KEL's `send_divergent_events` at `lib/kels/src/types/kel/sync.rs:517`):
 
 1. Trace forward from each fork event to partition post-divergence events into `chain_a` and `chain_b`.
-2. Send **pre-divergence + non-cnt chain** as paged appends; each page lands as a non-divergent extension.
-3. Send **cnt-chain** as an atomic single-page batch; routes to `is_contest`, accepts on divergent or linear.
+2. Send **pre-divergence + non-privileged chain** as paged appends; each page lands as a non-divergent extension.
+3. Send **contesting chain** (ending in the non-archiving privileged event — `Sea` or `Dec` — that triggered the contested transition) as an atomic single-page batch; lands at the receiver as a divergent extension at `v_d`, triggering privileged-divergence-is-terminal.
 
-For unrecovered divergence (no terminal in either branch — possible on SEL during the gossip-propagation window before the owner contests), the longer chain is sent as paged appends, then the fork event from the shorter chain establishes divergence at the receiver.
+For unrecovered divergence (no terminal in either branch — possible on SEL during the gossip-propagation window before resolution), the longer chain is sent as paged appends, then the fork event from the shorter chain establishes divergence at the receiver.
 
 **Why send-side, not receive-side:** receive-side ordering can sort what arrived but cannot fix structural composition problems where the receiver's submit handler will reject a particular batch composition. The sender has full chain visibility and produces sequences that compose correctly given the receiver's routing rules. Same principle applies across KEL, IEL, and SEL — see [../iel/merge.md](../iel/merge.md#gossip-send-side-partitioning-divergent-iels) and [../kel/merge.md](../kel/merge.md).
 
@@ -261,9 +245,9 @@ For unrecovered divergence (no terminal in either branch — possible on SEL dur
 
 1. **Events are sorted deterministically** — by `(serial, kind_priority, said)`. SAID tiebreaker has no semantic meaning but ensures identical ordering across all nodes.
 2. **Only one divergent event added** — when divergence is detected, only the first conflicting event is stored.
-3. **Governance-evaluation events are bounded** — proactive evaluation (`MAX_NON_EVALUATION_EVENTS = 63`) caps non-evaluation runs; the next event after 63 must be `Sea`/`Rpr`/`Cnt`/`Dec`.
+3. **Governance-evaluation events are bounded** — proactive evaluation (`MAX_NON_EVALUATION_EVENTS = 63`) caps non-evaluation runs; the next event after 63 must be `Sea`/`Rpr`/`Dec`.
 4. **Repair cannot truncate at or before the evaluation seal** — `truncate_and_replace` rejects fork-points at-or-before `lastSealAdvancingEvent` in chain order.
-5. **Terminal states are permanent** — any `Cnt` or `Dec` in the chain freezes it.
+5. **Contested is fully terminal; Decommissioned admits one divergent extension** — once the chain is Contested, no submission of any kind is accepted. Decommissioned accepts no linear extension; a non-archiving privileged event (`Sea` or `Dec`) with `previous = v_{d-1}.said` and `serial = Dec.serial` is admitted as a divergent extension and transitions the chain Decommissioned → Contested via the [order-independent rule](../../../../protocol-doctrine.md#order-independent-divergent-transitions).
 6. **Authorization is consumer-side** — the server does NOT verify anchor signatures on submit. Consumers verify the anchoring model when they use the data.
 7. **Inception is permissionless but bounded by batch rule** — Icp alone is rejected; `[Icp, Est, ...]` is the minimum legal inception batch.
 8. **Cross-chain bindings are path-agnostic** — same validation rules at submit, gossip, bootstrap, re-verification.
