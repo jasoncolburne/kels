@@ -57,8 +57,6 @@ Four valid combinations:
 | `None` | `Some` | Anonymous write, controlled read (drop-box) |
 | `Some` | `Some` | Attested write, controlled read (private message) |
 
-**Supersedes #167's `custody.write` + `custody.read` split.** The prior design used `custody.write` (IEL event SAID) + `custody.read` (IEL prefix). The write field stays as an IEL event SAID under the new name `ownerIelEvent`; the read field generalizes from "IEL prefix" to "policy SAID," giving composability that the prefix-only form couldn't express. Asymmetric patterns (signed-public, anonymous-drop-box) are preserved.
-
 ### Availability (per-SAD-object replication + lifecycle)
 
 #167: sibling top-level inline struct, factored apart from custody. Independently optional:

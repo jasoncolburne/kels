@@ -188,7 +188,7 @@ This fires when an authorized non-terminal event would land at or before the eva
 
 "Kind-relevant authorization" means each kind's gate uses the appropriate IEL-resolved policy: `Upd` checks `authPolicy`; `Sea` checks `governancePolicy`. Both kinds use the same algorithmic `ContestRequired` gate here — what differs is which policy the §1 check ran against.
 
-By the time §9 runs, the new event has already passed its anchoring check upstream. The `ContestRequired` trigger combines two things: the existing-chain sanity floor (chain wasn't already broken) and the serial-vs-seal arithmetic (the new event's serial lands at-or-before the seal).
+The trigger fires after §1's anchoring check has already passed upstream. The `ContestRequired` trigger combines two things: the existing-chain sanity floor (chain wasn't already broken) and the serial-vs-seal arithmetic (the new event's serial lands at-or-before the seal).
 
 This mirrors KEL's `ContestRequired` shape: someone else used the privileged primitive (KEL: revealed the recovery key; SEL: advanced the seal), and safe normal-flow continuation is no longer possible. The submitter must accept the new state, decommission via `Dec`, or abandon and reincept. See [event-log.md §Algorithmic trigger — `ContestRequired`](event-log.md#algorithmic-trigger--contestrequired).
 

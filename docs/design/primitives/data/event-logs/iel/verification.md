@@ -143,7 +143,7 @@ IelVerification:
     divergenceAncestor: Option<Digest256>   // SAID of v_{d-1} on a divergent chain (None on linear)
     is_contested: bool                       // derived: branches.len() > 1 (equivalent to is_divergent on IEL)
     is_decommissioned: bool
-    lastSealAdvancingEvent: Option<Digest256> // SAID of most recent Evl or Sea
+    lastSealAdvancingEvent: Option<Digest256> // SAID of most recent Evl
     queried_saids: BTreeSet<Digest256>       // caller-declared SAIDs of interest
     satisfied_saids: BTreeSet<Digest256>     // verifier-populated subset (auth-passed, pre-divergence)
     // policy_history: BTreeMap<Digest256, (Digest256, Digest256)> — caller-bounded by queried_saids
@@ -156,7 +156,7 @@ Accessors:
 - `auth_policy_at(event_said)` — SAID of the `authPolicy` tracked at the named IEL event, IF `event_said` was pre-declared in `queried_saids`. Returns `None` for SAIDs outside `queried_saids` (caller-bounded; see §Caller-Bounded SAID Querying). Used by SEL verification to resolve `ielEvent` bindings.
 - `governance_policy_at(event_said)` — same, for governancePolicy.
 - `policy_satisfied()` — overall policy satisfaction across the chain.
-- `lastSealAdvancingEvent()` — SAID of the most recent `Evl` or `Sea` (the evaluation seal; advances on both kinds).
+- `lastSealAdvancingEvent()` — SAID of the most recent `Evl` (the evaluation seal).
 - `divergenceAncestor()` — SAID of `v_{d-1}` on a divergent chain (`None` on linear).
 - `is_divergent()` — `branches.len() > 1`.
 - `is_contested()` — equivalent to `is_divergent()` on IEL; wraps it for cross-primitive API symmetry (see §Contested-state derivation above).

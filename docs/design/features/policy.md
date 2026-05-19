@@ -1,8 +1,6 @@
 # kels-policy: Policy Framework Design
 
-> **⚠️ Design in transition.** Poison/poisoning terminology renaming to withdrawal — see [#177](https://github.com/jasoncolburne/kels/issues/177). When that rename lands, all "poison" references in this document update to "withdrawal" (struct fields, DSL nodes, section names, verifier behavior). Identity-binding via `identity(X)` DSL leaf is landed (per [#134](https://github.com/jasoncolburne/kels/issues/134)).
-
-A composable trust policy framework for defining multi-party endorsement requirements on credentials. Policies replace the single-issuer model — instead of one KEL prefix that must anchor a credential's SAID, a policy defines arbitrary conditions involving multiple endorsers, thresholds, weighted voting, delegation, and nested composition.
+A composable trust policy framework for defining multi-party endorsement requirements on credentials. A policy expression defines arbitrary conditions involving multiple endorsers, thresholds, weighted voting, delegation, and nested composition; policies are self-addressed SADs evaluated consumer-side against KEL/IEL state.
 
 ## Core Concepts
 
@@ -238,46 +236,17 @@ Per-endorser results are cached to avoid redundant KEL verification.
 
 ## Integration with kels-creds
 
-### Credential
+Credentials bind to identities via IEL event SAIDs (`issuerIelEvent`, `subjectIelEvent`); the issuer's `authPolicy` is derived by dereferencing `issuerIelEvent` rather than carried directly on the credential. For the canonical credential, schema, edge, and rule field shapes, see [creds.md §Credential](creds.md#credentialt) and [creds.md §Edge/Edges](creds.md#edgeedges).
 
-The `issuer: String` field has been replaced with `policy: String` (a policy SAID). The `irrevocable: Option<bool>` field has been removed (now expressed via policy `immune: true`).
+### Verifier integration
 
-```rust
-pub struct Credential<T: Claims> {
-    pub said: String,
-    pub schema: String,
-    pub policy: String,              // policy SAID (was: issuer prefix)
-    pub subject: Option<String>,
-    pub issuedAt: StorageDatetime,
-    // ... (nonce, claims, expiresAt, edges, rules)
-}
-```
+Credential verification walks the issuer's `authPolicy` (resolved per [creds.md §Verification Modes](creds.md#verification-modes)) against the credential's canonical SAID. The walk uses the same `evaluate_policy` machinery documented above — per-leaf `endorse(KEL)`, `identity(X)`, `delegate(DELEGATOR)` checks, `threshold` / `weighted` aggregation, `policy(SAID)` recursion. Each leaf returns an `EndorsementStatus` (`Endorsed` / `NotEndorsed` / `Poisoned` / `KelError`) that the credential verifier surfaces in its `policy_verification` field.
 
-`Credential::build()` takes a `&Policy` and returns the credential with its canonical SAID. The caller anchors the SAID in endorser KELs separately (e.g., via `KeyEventBuilder::interact()`).
+### Edge constraint as canonical policy SAID
 
-### CredentialVerification
+`Edge.policy` is a **canonical policy SAID** constraint. The edge matches any credential whose issuer `authPolicy` — obtained by dereferencing the credential's `issuerIelEvent` and compacting the result — compacts to the edge's policy SAID. The constraint is structural (what shape of authorization the issuer was operating under), not pinned to specific KEL prefixes; identity-current vs. issuance-frozen semantics fall out of the verification mode chosen for the credential itself.
 
-Replaced single-issuer fields with policy verification:
-
-```rust
-pub struct CredentialVerification {
-    pub credential: String,
-    pub policy: String,
-    pub policy_verification: PolicyVerification,
-    pub subject: Option<String>,
-    pub is_expired: bool,
-    pub schema_validation: SchemaValidationReport,
-    pub edge_verifications: BTreeMap<String, CredentialVerification>,
-}
-```
-
-`is_valid()` checks `policy_verification.is_satisfied` (instead of `is_issued && !is_revoked`).
-
-### Edge
-
-The `issuer: Option<String>` field has been replaced with `policy: Option<String>` (a policy SAID constraint). The `delegated: Option<bool>` field has been removed (delegation is now expressed in the policy DSL via `delegate()`).
-
-Edge verification compacts the presented credential's policy and checks `compacted.said == edge.policy` — not exact match. This allows delegate flexibility without updating the edge.
+Canonical-policy matching survives operational changes — delegates rotate under `delegate(DELEGATOR)`; KEL replacements under `identity(X)` — because the compacted form strips the variable parts. The edge doesn't need updating when these change.
 
 ## Module Structure
 

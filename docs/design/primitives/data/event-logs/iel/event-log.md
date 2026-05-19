@@ -392,9 +392,8 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 | State observed | Batch content | Outcome |
 |---|---|---|
 | Linear, normal append | `Evl` | Append. Seal advances. |
-| Linear, normal append | `Sea` | Append. Seal advances (no policy evolution). |
 | Linear, overlap (fork) | concurrent `Evl` (two governance-authorized submissions at the same serial via gossip-merge with distinct policy bodies) | Insert second event at `v_d`; chain becomes contested-terminal (every IEL event is privileged → privileged-divergence rule fires). Valid divergent pairing: `Evl`-`Evl` (and `Evl`-`Dec` / `Dec`-`Evl`). No 3rd event lands at `v_d` (IEL has no upgrade rule per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal); divergent IEL is contested-terminal at first 2-event observation). |
-| Linear, post-evaluation-seal | `Evl` or `Sea` extending pre-seal serial | Rejected by seal-cap (cannot fork at or before the seal). |
+| Linear, post-evaluation-seal | `Evl` extending pre-seal serial | Rejected by seal-cap (cannot fork at or before the seal). |
 | Any non-terminal | `Dec` | Append at chain max-serial; mark decommissioned. |
 | Contested (post-divergence) | any submission, including further `Evl`/`Dec` via gossip at `v_d` or beyond | Rejected with `ContestedIel`. |
 | Decommissioned | any submission | Rejected with `IelDecommissioned`. |
