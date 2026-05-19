@@ -13,7 +13,7 @@ IEL verification ensures:
 - Events chain correctly from current state to inception via `previous` links
 - `Icp` is anchored under its declared `governancePolicy` (self-governance-endorsement — every IEL event is a governance act)
 - `Evl` / `Dec` are anchored under the branch's tracked `governancePolicy`
-- Any policy referenced as `authPolicy` or `governancePolicy` (introduced at Icp or evolved via Evl) has `immune: true` — the verifier rejects the chain otherwise as a structural error (policy immunity rule; see [event-log.md §Evaluation Seal and Anchor Non-Poisonability](event-log.md#evaluation-seal-and-anchor-non-poisonability))
+- Any policy referenced as `authPolicy` or `governancePolicy` (introduced at Icp or evolved via Evl) has `immune: true` — the verifier rejects the chain otherwise as a structural error (policy immunity rule; see [event-log.md §Evaluation Seal and Policy Immunity](event-log.md#evaluation-seal-and-policy-immunity))
 
 Events are linked by their `previous` SAID. Serial is the position in the chain (inception is serial 0).
 

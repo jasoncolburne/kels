@@ -27,7 +27,11 @@ Each operation runs the same pre-flight:
 - Build the appropriate event extending the bundled-pending tip (or owner's verified tip if pending is empty).
 - Submit `[pending..., Rpr/Dec]` atomically.
 
-If the chain is sealed past the operator's view (`ContestRequired` returned by submit), neither `repair` nor a normal append is valid for the operator's current state. The paths are: accept the new state (pull the latest chain and re-submit at the new tip), `decommission` to end the chain cleanly, or rotate the bound IEL's governance to exclude a compromised member (out-of-band IEL `Evl`).
+If the chain is sealed past the operator's view (`ContestRequired` returned by submit), neither `repair` nor a normal append is valid for the operator's current state. The paths are:
+
+- **Accept the new state** — pull the latest chain and re-submit at the new tip.
+- **`decommission`** — end the chain cleanly.
+- **Rotate the bound IEL's governance** to exclude a compromised member (out-of-band IEL `Evl`).
 
 For full algorithmic detail of the discriminator that runs server-side, see [event-log.md §Server-side discriminator](event-log.md#server-side-discriminator).
 
@@ -75,7 +79,7 @@ When a chain divergence is observed:
 
 ## References
 
-- [event-log.md](event-log.md) — Chain lifecycle, the discriminator algorithm, evaluation seal and anchor non-poisonability.
+- [event-log.md](event-log.md) — Chain lifecycle, the discriminator algorithm, evaluation seal.
 - [merge.md](merge.md) — Submit handler routing.
 - [reconciliation.md](reconciliation.md) — Multi-node correctness matrix.
 - [../../../../infrastructure/sadstore.md](../../../../infrastructure/sadstore.md) — SADStore service architecture and gossip layer.

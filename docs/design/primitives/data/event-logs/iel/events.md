@@ -94,11 +94,20 @@ The verifier's branch state tracks the effective `authPolicy` — seeded from `I
 
 ### Policy immunity requirement
 
-Any policy referenced as a chain's `authPolicy` OR `governancePolicy` — whether at `Icp` (v0) or via a `Evl` evolution — MUST have `immune: true`. Non-immune policies are rejected at submit time and during verification (hard reject; structural error). This is the structural enforcement of chain stability: IEL chains are time-ordered policy histories, and past authorizations (both auth and governance) must remain stable across the lifetime of the chain.
+Any policy referenced as a chain's `authPolicy` OR `governancePolicy` — declared at `Icp` (v0) or evolved via `Evl` — MUST have `immune: true`. Non-immune policies are rejected at submit time AND during verification as hard structural errors.
 
-To revoke an endorser's authority, evolve the policy via `Evl` (issuing a new authPolicy or governancePolicy SAID that excludes the endorser); do not attempt to poison past events. `Evl`-driven evolution is the canonical correction path.
+**The rule is a storage-layer commitment.** A referenced policy must remain resolvable for the lifetime of any chain that references it. Without immunity, the failure mode is signal-ambiguity:
 
-This rule mirrors SEL's immunity rule and serves the same purpose. With IEL, it becomes the cornerstone of cross-chain consistency: every SEL event binds to a specific IEL event SAID, and that IEL event's policy SAIDs must be immune so the binding remains verifiable for the lifetime of any dependent SEL.
+- An IEL event lands referencing policy `P`; authorization is confirmed at submit (`P` resolves; anchors satisfy threshold).
+- Later, `P` becomes unresolvable (storage GC, propagation gap, lost data).
+- A consumer verifying that event sees `policy_satisfied = false`.
+- The signal is structurally indistinguishable from "the event's anchors don't satisfy `P`'s threshold" — i.e., an authorization failure.
+
+Immunity prevents this collapse. Past authorizations stay distinguishable from authorization failures because the referenced policy is guaranteed to remain resolvable. Enforcing the rule at submit AND verification keeps the storage commitment a protocol invariant rather than emergent operator behavior — authorization-affecting state lives in the schema, not in runtime storage discipline.
+
+**Revocation is via policy evolution.** To remove an endorser's authority going forward, evolve the policy via `Evl` — declare a new `authPolicy` or `governancePolicy` SAID that excludes the endorser. The new policy must itself be immune. Past events stay authorized under the policy in effect when they landed.
+
+The rule is the cornerstone of cross-chain consistency: every SEL event binds to a specific IEL event SAID, and that IEL event's policy SAIDs must be immune so the binding remains resolvable for the lifetime of any dependent SEL.
 
 See [event-log.md §Cross-Chain Anchor Stability](event-log.md#cross-chain-anchor-stability) for the SEL-side implications.
 
@@ -172,7 +181,7 @@ After `Dec`, all submissions are rejected. Pre-Dec events retain trust under the
 
 ## Cross-chain binding from SEL to IEL
 
-Every SEL event at v1+ carries `ielEvent: Digest256` — the SAID of an IEL event whose declared/evolved policy authorizes the SEL event. The per-kind binding rule (which IEL policy field gates which SEL kind) and the path-agnostic validation rules (submit, gossip, bootstrap, re-verification) are the canonical SEL-side concern; see [../sel/events.md §Validation rules](../sel/events.md#validation-rules-path-agnostic--submit-gossip-bootstrap-re-verification). For the IEL-side stability invariants that make this binding deterministic forever — immunity, anchor non-poisonability, and the resolution mechanism — see [event-log.md §Cross-Chain Anchor Stability](event-log.md#cross-chain-anchor-stability).
+Every SEL event at v1+ carries `ielEvent: Digest256` — the SAID of an IEL event whose declared/evolved policy authorizes the SEL event. The per-kind binding rule (which IEL policy field gates which SEL kind) and the path-agnostic validation rules (submit, gossip, bootstrap, re-verification) are the canonical SEL-side concern; see [../sel/events.md §Validation rules](../sel/events.md#validation-rules-path-agnostic--submit-gossip-bootstrap-re-verification). For the IEL-side stability invariants that make this binding deterministic forever — policy immunity, chain immutability, and the resolution mechanism — see [event-log.md §Cross-Chain Anchor Stability](event-log.md#cross-chain-anchor-stability).
 
 Binding by SAID (not serial) is unambiguous under IEL divergence, robust against re-tracked-same-policy patterns, and enables a fast-eval shortcut: one IEL event fetch + one anchor check, without paginating the full IEL chain.
 
@@ -180,7 +189,7 @@ See [../sel/events.md §`ielEvent` semantics](../sel/events.md#ielevent-semantic
 
 ## References
 
-- [event-log.md](event-log.md) — Chain lifecycle, evaluation seal, anchor non-poisonability.
+- [event-log.md](event-log.md) — Chain lifecycle, evaluation seal, policy immunity.
 - [verification.md](verification.md) — `IelVerifier` algorithm.
 - [merge.md](merge.md) — Submit-handler routing.
 - [reconciliation.md](reconciliation.md) — Multi-node correctness matrix.

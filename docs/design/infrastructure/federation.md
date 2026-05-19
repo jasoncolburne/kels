@@ -16,7 +16,7 @@ Identity primitives already answer the first two:
 
 - An IEL's `authPolicy` is the policy a chain event must satisfy to be authoritative at the moment of evaluation. Under the federation convention, `authPolicy` is shaped as `any(identity(X_1), …, identity(X_n))` — any single member identity may speak for the federation at handshake time. The set of `identity(...)` leaves *is* the membership set.
 - An IEL's `governancePolicy` is the policy an `Evl` must satisfy to evolve `authPolicy` (or `governancePolicy` itself). Under the federation convention, `governancePolicy` is shaped as `threshold(M(n), identity(X_1), …, identity(X_n))` over the *same* member set, where M(n) is a stair function of federation size (see [§Threshold formula](#threshold-formula-application-level)). The membership-change protocol is exactly this threshold check.
-- The IEL policy-immunity rule ([primitives/data/event-logs/iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../primitives/data/event-logs/iel/event-log.md#evaluation-seal-and-anchor-non-poisonability)) guarantees past authorizations stay final — a former member's past endorsements cannot be retroactively repudiated.
+- The IEL policy-immunity rule ([primitives/data/event-logs/iel/event-log.md §Evaluation Seal and Policy Immunity](../primitives/data/event-logs/iel/event-log.md#evaluation-seal-and-policy-immunity)) keeps every referenced policy resolvable for the chain's lifetime — a former member's past endorsements stay verifiable, and the policy that authorized them stays distinguishable from a missing-policy failure.
 
 The third question — network addresses — is answered by per-peer SELs, one per member identity, each peer publishing its own current endpoints under its own authority. Nothing federation-wide needs to track addresses centrally.
 
@@ -80,8 +80,8 @@ There is **no denormalized member list**. Enumeration of the current membership 
 
 The IEL policy-immunity rule requires every policy referenced as `authPolicy` or `governancePolicy` to have `immune: true`. The federation IEL is no exception. Two consequences:
 
-- **No poisoning of past authorizations.** A peer whose endorsements appeared on past federation `Evl`s cannot retroactively repudiate them, even after the peer is removed.
-- **Revocation happens by evolution, not by poison.** To drop a member, evolve `authPolicy` to a new SAID that excludes them. The dropped member's past endorsements remain final; new endorsements from them are simply not counted against the new policy.
+- **Past authorizations stay verifiable.** A former member's endorsements on prior federation `Evl`s remain resolvable: the policy that authorized them stays distinguishable from a missing-policy failure (see [primitives/data/event-logs/iel/events.md §Policy immunity requirement](../primitives/data/event-logs/iel/events.md#policy-immunity-requirement)).
+- **Revocation happens by policy evolution.** To drop a member, evolve `authPolicy` to a new SAID that excludes them. The dropped member's past endorsements still verify under the policy in effect when they landed; new endorsements from them are simply not counted against the new policy.
 
 ## Gossip-service identity
 

@@ -30,15 +30,15 @@ State is computed from the chain's events, never tracked as a separate flag. The
 
 For per-kind field rules and typical chain shapes, see [events.md](events.md). **IEL has no `Rpr` kind** — divergence is preserved as data, and the chain becomes contested-terminal immediately on any divergence (every IEL event is privileged → privileged-divergence-is-terminal fires). See [§Divergence is Contested-Terminal](#divergence-is-contested-terminal) for the structural argument and [§Operator recourse against compromise](#operator-recourse-against-compromise) for the recourse paths.
 
-## Evaluation Seal and Anchor Non-Poisonability
+## Evaluation Seal and Policy Immunity
 
-The `lastSealAdvancingEvent` is the SAID of the most recent `Evl` event. It is the chain's **evaluation seal**.
+The `lastSealAdvancingEvent` is the SAID of the most recent `Evl` event. It is the chain's **evaluation seal**. The seal-cap and locked-portion bound at the protocol layer structurally block stale-authority chain rearrangement — see [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal).
 
 > **Policy immunity rule.** Any policy referenced as a chain's `authPolicy` or `governancePolicy` MUST have `immune: true`. Both the merge engine (at submit time) and the verifier (at verification time) reject any `Icp` or `Evl` event that introduces or evolves a policy whose `immune` flag is not set. Both layers enforce because the verifier processes data from any source — gossip, peer pulls, restored backups, bootstrap — and cannot trust that the originating node enforced the rule (the "DB cannot be trusted" invariant; see [../../../../protocol-doctrine.md](../../../../protocol-doctrine.md)).
 
-**Why this matters: once an IEL event lands, the governance satisfaction it proves is final.** `immune: true` makes a policy impervious to poisoning in the evaluator (`evaluate_anchored_policy` skips poison checks for immune policies), so no anchor used in any chain authorization (auth or governance) can ever be poisoned. Past `Evl` / `Dec` evaluations stay satisfied by construction.
+**Why the rule exists.** Immunity is a storage-layer commitment: a referenced policy must remain resolvable for the lifetime of any chain that references it. Without it, a referenced policy can become unresolvable (storage GC, propagation gap, lost data), and a consumer verifying any event under that policy sees `policy_satisfied = false` — structurally indistinguishable from "the event's anchors don't satisfy the policy's threshold." Past authorizations would collapse into authorization failures from the consumer's perspective. Enforcing the rule at both submit and verification keeps the storage commitment a protocol invariant — authorization-affecting state lives in the schema, not in emergent storage behavior. The full rationale lives at [events.md §Policy immunity requirement](events.md#policy-immunity-requirement).
 
-**Revocation via policy evolution, not poison.** To remove an endorser's authority going forward, evolve the policy via `Evl` (declaring a new `authPolicy` or `governancePolicy` SAID that excludes the endorser); the new policy must itself be immune. Past events stay authorized under the policy in effect when they landed. For compromise of an underlying anchoring KEL, the corrective mechanism is `Rec` on that KEL (see [§Trust Caveat below](#trust-caveat--recovered-anchoring-kels)).
+**Revocation is via policy evolution.** To remove an endorser's authority going forward, evolve the policy via `Evl` — declare a new `authPolicy` or `governancePolicy` SAID that excludes the endorser. The new policy must itself be immune. Past events stay authorized under the policy in effect when they landed. For compromise of an underlying anchoring KEL, the corrective mechanism is `Rec` on that KEL (see [§Trust Caveat below](#trust-caveat--recovered-anchoring-kels)).
 
 **Every `Evl` must be a real evolution.** A no-op `Evl` (both `authPolicy` and `governancePolicy` identical to the predecessor) is rejected as a structural error. Every IEL event therefore changes chain state — `Icp` declares policy, `Evl` evolves policy, `Dec` terminates the chain.
 
@@ -174,7 +174,7 @@ A SEL event bound to `IEL_event_X.said` resolves authorization through:
 
 For this resolution to remain deterministic forever:
 - `IEL_event_X` must remain in IEL's authentic chain (never archived) — guaranteed by chain immutability and the no-`Rpr` rule (no archival on IEL).
-- The policy declared at `IEL_event_X` must have stable content (anchors don't move) — guaranteed by the IEL immunity rule.
+- The policy referenced at `IEL_event_X` must remain resolvable so consumers can evaluate it — guaranteed by the IEL immunity rule.
 - The KEL ixns anchoring SEL.said must remain in their KELs — caveat: subject to KEL `rec` (see Trust Caveat).
 
 The first two are structural. The third is a runtime trust concern that applies to all anchoring in the system.
@@ -349,7 +349,7 @@ The brand-new chain race described above is defused by enrollment-time disciplin
 
 ## Trust Caveat — Recovered or Contested Anchoring KELs
 
-Beyond the structural guarantees above, IEL trust degrades for consumers when anchoring KELs are recovered or contested. Specifically: the seal property and the anchoring model give *structural* guarantees against poisoning (policy immunity rule) and gossip races (terminal states are deterministic across nodes). They give *partial* guarantees when a participating KEL is later recovered, and *no* guarantees when a participating KEL has been contested.
+Beyond the structural guarantees above, IEL trust degrades for consumers when anchoring KELs are recovered or contested. The seal-cap and locked-portion bound structurally block stale-authority chain rearrangement; the policy-immunity rule keeps every referenced policy resolvable for the chain's lifetime; gossip races resolve to deterministic terminal states. These structural guarantees are *partial* when a participating KEL is later recovered, and provide *no* guarantees when a participating KEL has been contested.
 
 `Rec` (recovery-after-divergence; distinct from proactive `Ror`) is by design evidence that the prior signing key was compromised. After `rec`, anchors made under that key **may or may not** survive: anchors on the branch the Rec extends stay (`rec` archives only the other branch); anchors on the now-archived branch do not.
 

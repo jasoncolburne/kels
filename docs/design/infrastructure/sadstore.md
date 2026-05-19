@@ -86,7 +86,7 @@ A SEL transitions through states (Active → Divergent → Contested / Decommiss
 - Contested chain: `hash_effective_said("contested:{prefix}")` — terminal.
 - Decommissioned chain: the `Dec` event's SAID — terminal owner-initiated end.
 
-For the full chain lifecycle (divergence detection, repair via discriminator, decommission, evaluation seal, anchor non-poisonability rule, server-observable case taxonomy), see [sel/event-log.md](../primitives/data/event-logs/sel/event-log.md). Repair history and archived events are queryable via the `sad_event_archives`, `sad_event_repairs`, and `sel_repair_events` tables — exposed through the repair endpoints listed below.
+For the full chain lifecycle (divergence detection, repair via discriminator, decommission, evaluation seal, server-observable case taxonomy), see [sel/event-log.md](../primitives/data/event-logs/sel/event-log.md). Repair history and archived events are queryable via the `sad_event_archives`, `sad_event_repairs`, and `sel_repair_events` tables — exposed through the repair endpoints listed below.
 
 ### Repair Propagation
 

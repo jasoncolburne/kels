@@ -18,7 +18,7 @@ All cases below depend on these invariants:
 
 5. **Bounded operations**: Repair batch (`pending + Rpr`) ≤ 64, decommission batch (`pending + Dec`) ≤ 64, adversary chain to archive ≤ 63. All fit in one page (`MINIMUM_PAGE_SIZE = 64`).
 
-6. **No retroactive poisoning** (lives on IEL): every IEL-tracked policy is immune. Past authorizations stay satisfied by construction. See [../iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../iel/event-log.md#evaluation-seal-and-anchor-non-poisonability).
+6. **Policy immunity** (lives on IEL): every IEL-tracked policy is immune. Each referenced policy stays resolvable for the chain's lifetime — past authorizations stay distinguishable from authorization failures. See [../iel/event-log.md §Evaluation Seal and Policy Immunity](../iel/event-log.md#evaluation-seal-and-policy-immunity).
 
 7. **Per-event parent-monotonic on `ielEvent`** (SEL-specific; KEL/IEL have no analog because their authorization is intrinsic, not referenced via a separate field): each SEL event's `ielEvent` is at-or-after its parent event's `ielEvent` (parent via `previous` SAID) in IEL chain order, applied per branch independently. Branches with different parent-chains do not constrain each other; the chain-wide `lastIelEvent` is a derived aggregate (max across all events) used by consumers, not a flowing watermark gate. Within-chain policy variation across branches is bounded by the seal-cap and by privileged-divergence-is-terminal.
 

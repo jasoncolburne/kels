@@ -118,7 +118,7 @@ For an SEL event at v1+:
 - SEL.said is anchored under the resolved policy.
 - **Per-event parent-monotonic on `ielEvent`** (SEL-specific): each event's `ielEvent` is at-or-after its parent event's `ielEvent` (parent via `previous` SAID) in IEL chain order, applied per branch independently. No rebinding to stale IEL events on a same-branch extension. Branches with different parent-chains do not constrain each other. KEL and IEL have no analog rule — they resolve authorization from commitments/policy intrinsic to their own chain at the parent event. Within-chain policy variation across SEL branches is bounded by the seal-cap (no fork at-or-before seal) and privileged-divergence-is-terminal (any `Sea`/`Rpr`/`Dec` in the divergent set ends the chain).
 
-Past SEL events stay verified forever: the bound IEL event is immutable (chain history is fixed), the policy it declared is immune (immunity rule on IEL — see [../iel/events.md §Policy immunity requirement](../iel/events.md#policy-immunity-requirement)), and the anchors (KEL ixns) are timeless.
+Past SEL events stay verified forever: the bound IEL event is immutable (chain history is fixed), the policy it referenced stays resolvable (per the IEL immunity rule — see [../iel/events.md §Policy immunity requirement](../iel/events.md#policy-immunity-requirement)), and the anchors (KEL ixns) are timeless.
 
 #### Parent-monotonic gaps and consumer-side discipline
 
@@ -141,9 +141,9 @@ This makes content evolution legible at a glance: scanning the chain, every cont
 
 ### Policy immunity (lives on IEL)
 
-SEL events do not declare policies, so the immunity rule has no SEL-side fields to gate. The structural guarantee that protects past SEL authorizations comes from the IEL: every policy SAID that any IEL ever tracks must be `immune: true`, enforced both at IEL submit time and at IEL verification time. See [../iel/events.md §Policy immunity requirement](../iel/events.md#policy-immunity-requirement).
+SEL events do not declare policies, so the immunity rule has no SEL-side fields to gate. The storage commitment that keeps past SEL authorizations resolvable lives on the IEL: every policy SAID that any IEL ever tracks must be `immune: true`, enforced both at IEL submit time and at IEL verification time. See [../iel/events.md §Policy immunity requirement](../iel/events.md#policy-immunity-requirement).
 
-The cross-chain effect: an SEL event bound to `IEL_event_X.said` resolves through that IEL event's policy SAID. As long as that policy SAID is immune (which IEL guarantees), the policy's content is fixed and the SEL event's anchor verification produces the same answer forever. See [../iel/event-log.md §Cross-Chain Anchor Stability](../iel/event-log.md#cross-chain-anchor-stability).
+The cross-chain effect: an SEL event bound to `IEL_event_X.said` resolves through that IEL event's policy SAID. As long as that policy SAID is immune (which IEL guarantees), the policy stays resolvable and the SEL event's anchor verification produces the same answer forever. See [../iel/event-log.md §Cross-Chain Anchor Stability](../iel/event-log.md#cross-chain-anchor-stability).
 
 ### Terminal states are fully terminal
 

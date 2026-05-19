@@ -96,7 +96,7 @@ The verifier seeds `tracked_rotation_hash` / `tracked_recovery_hash` from incept
 
 `MAX_NON_REVEALING_EVENTS = MINIMUM_PAGE_SIZE - 2 = 62`. After 62 non-recovery-revealing events (i.e., events that aren't `Rec` / `Ror` / `Dec`), the next event must reveal the recovery key. The `- 2` headroom accommodates a `[rec, rot]` recovery batch fitting in one `MINIMUM_PAGE_SIZE`-bounded page.
 
-This bound caps an adversary's fork to 62 events before they need to satisfy the recovery primitive — which they cannot without the recovery key — and bounds the synchronous archival window during recovery to a single page. The builder auto-inserts `Ror` (upgrading a `Rot`) when the bound is about to be crossed.
+This bound caps an adversary's fork to 62 events before they need to satisfy the recovery primitive — which they cannot without the recovery key. It also bounds the synchronous archival window during recovery to a single page. The builder auto-inserts `Ror` (upgrading a `Rot`) when the bound is about to be crossed.
 
 KEL's proactive-ROR bound is the structural analog of SEL's evaluation seal: both are privileged-primitive caps that bound how far an adversary can fork before they must satisfy a higher bar (recovery-key revelation on KEL; governance evaluation on SEL). The two reads on `lastSealAdvancingEvent` operate identically — see [../../../../protocol-doctrine.md §Forks are Seal-Bounded](../../../../protocol-doctrine.md#forks-are-seal-bounded) for the cross-primitive frame, and [../sel/events.md §Evaluation bound](../sel/events.md#evaluation-bound) for the SEL-side instantiation.
 

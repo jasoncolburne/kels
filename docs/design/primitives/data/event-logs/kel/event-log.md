@@ -48,7 +48,7 @@ KEL tracks two distinct concepts that share the SAID-of-recent-event pattern:
 
 **Once a recovery-revealing event lands, the dual-signature it proves is final.** Subsequent compromise or revocation of the keys it revealed does NOT retroactively unsatisfy the past authorization — the chain's history at that serial is locked. Without this, history could be invalidated retroactively by anyone who later comes to control the revealed key material, making terminal states (recovered, contested, decommissioned) unstable. The trade-off is that a key controller who later turns adversarial cannot undo their past contributions; only the going-forward spent-key effect applies.
 
-`lastSealAdvancingEvent` plays the same structural role across all three primitives — see [../iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../iel/event-log.md#evaluation-seal-and-anchor-non-poisonability) for the IEL-side discussion. A privileged-non-terminal primitive defines a forward-only watermark per chain; prior advancements are immutable.
+`lastSealAdvancingEvent` plays the same structural role across all three primitives — see [../iel/event-log.md §Evaluation Seal and Policy Immunity](../iel/event-log.md#evaluation-seal-and-policy-immunity) for the IEL-side discussion. A privileged-non-terminal primitive defines a forward-only watermark per chain; prior advancements are immutable.
 
 The seal-cap rule is unconditional on KEL: a new event's parent must sit at-or-after `seal_serial`. Any submission whose parent is in the locked portion (`parent_serial < seal_serial`) is rejected. See [../../../../protocol-doctrine.md §Forks are Seal-Bounded](../../../../protocol-doctrine.md#forks-are-seal-bounded).
 
@@ -58,7 +58,7 @@ Divergence is detected when two events share the same `previous` SAID. The chain
 - If the divergent set contains a privileged event (`Rec`/`Ror`/`Dec`) — directly to **Contested** (terminal).
 - If the divergent set is non-privileged (only `Rot`/`Ixn` events) — to **Divergent (non-privileged)**, recoverable via `Rec`.
 
-s0 divergence is rejected outright — inception is fully deterministic; two distinct s0 events for the same prefix indicates protocol-level corruption, not authority conflict.
+s0 divergence is rejected outright — inception is fully deterministic; two distinct s0 events for the same prefix indicate protocol-level corruption, not authority conflict.
 
 **Race-vs-takeover framing.** Divergence on a KEL — two events at the same serial — can arise from a federation race (two parties holding the current signing key submitting concurrently — rare, since signing keys are typically single-party) or a takeover (a second signing-key holder, whose access was acquired via compromise, forking against the original holder). The chain shape records the divergence in the data; the protocol cannot structurally distinguish race from takeover. The verifier accepts both as structurally valid; the trust model degrades uniformly.
 
@@ -294,7 +294,6 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 | Linear, no conflict | batch ending in `Dec` | Insert `Dec`, mark decommissioned. `Accepted`. |
 | Contested | any submission | Rejected with `ContestedKel`. |
 | Decommissioned | any submission | Rejected with `KelDecommissioned` (the seal-cap rejects any submission whose parent sits at-or-before `v_{d-1}`; concurrent priv-event federation races resolve at the infrastructure layer per [#205](https://github.com/jasoncolburne/kels/issues/205)). |
-| Decommissioned | any other submission | Rejected with `KelDecommissioned`. |
 
 ## Implementation Map
 

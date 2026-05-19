@@ -48,13 +48,13 @@ SELs do not declare or evolve their own authorization policies. Every authorizat
 - **`Est` / `Upd`** is authorized iff anchored under the IEL's tracked `authPolicy` resolved through the SEL event's `ielEvent`. (`Est` is the v=1 binding-establishment event and is tier-2 anchored per [../../../../protocol-doctrine.md §Anchor Tier Elevation](../../../../protocol-doctrine.md#anchor-tier-elevation); `Upd` is the routine extension at v=2+ and is tier-1 anchored.)
 - **`Sea` / `Rpr` / `Dec`** is authorized iff anchored under the IEL's tracked `governancePolicy` resolved through `ielEvent`.
 
-The IEL primitive carries the immunity rule and the anchor-non-poisonability guarantees SEL depends on; SEL inherits stability for free: every IEL event referenced by an SEL binding has its policy SAIDs immune (IEL submit and verification gates enforce this), so the policy contents are fixed for the lifetime of the chain. See [../iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../iel/event-log.md#evaluation-seal-and-anchor-non-poisonability) and [../iel/event-log.md §Cross-Chain Anchor Stability](../iel/event-log.md#cross-chain-anchor-stability).
+The IEL primitive carries the policy-immunity rule SEL depends on: every IEL event referenced by an SEL binding has its policy SAIDs immune (IEL submit and verification gates enforce this), so the referenced policy stays resolvable for the lifetime of the chain. See [../iel/event-log.md §Evaluation Seal and Policy Immunity](../iel/event-log.md#evaluation-seal-and-policy-immunity) and [../iel/event-log.md §Cross-Chain Anchor Stability](../iel/event-log.md#cross-chain-anchor-stability).
 
 The cross-chain validation rules — same at submit, gossip, bootstrap, and re-verification — are documented at [../iel/event-log.md §Path-agnostic validation rules](../iel/event-log.md#path-agnostic-validation-rules). They include per-event parent-monotonic on `ielEvent` applied per branch (each event's `ielEvent` must be at-or-after its parent event's `ielEvent` in IEL chain order; branches with different parent-chains do not constrain each other). This rule is SEL-specific — KEL and IEL have no separate field referencing another chain's authorization context, so no analog rule applies to them.
 
 ## Trust Caveat — Recovered or Contested Anchoring KELs
 
-The seal property and the anchoring model give *structural* guarantees against poisoning (via IEL's immunity rule) and gossip races (terminal states are deterministic across nodes). They give *partial* guarantees when a participating KEL is later recovered, and *no* guarantees when a participating KEL has been contested.
+The seal-cap and locked-portion bound structurally block stale-authority chain rearrangement; IEL's policy-immunity rule keeps every referenced policy resolvable for the chain's lifetime (see [../iel/events.md §Policy immunity requirement](../iel/events.md#policy-immunity-requirement)); and gossip races resolve to deterministic terminal states. These structural guarantees are *partial* when a participating KEL is later recovered, and provide *no* guarantees when a participating KEL has been contested.
 
 `Rec` (recovery-after-divergence; distinct from proactive `Ror`) is by design evidence that the prior signing key was compromised. After `rec`, anchors made under that key **may or may not** survive: anchors on the branch the Rec extends stay (`rec` archives only the other branch); anchors on the now-archived branch do not. This applies to anchors of any kind — SEL governance evaluations, SEL writes, IEL evolutions.
 
@@ -284,7 +284,6 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 | Divergent (non-privileged) | other events (`Upd`/`Sea`/`Dec`) | `RepairRequired`. Chain unchanged. |
 | Contested | any | Rejected with `ContestedSel`. |
 | Decommissioned | any submission | Rejected with `DecommissionedSel` (the seal-cap rejects any submission whose parent sits at-or-before `v_{d-1}`; concurrent priv-event federation races resolve at the infrastructure layer per [#205](https://github.com/jasoncolburne/kels/issues/205)). |
-| Decommissioned | any other submission | Rejected with `DecommissionedSel`. |
 | Chain ends at Icp | `[Icp]` alone (no v1 `Est`) | Rejected by the verifier (`SelVerifier::finish_internal` → `IncompleteInception`). |
 
 The full sealed/unsealed × per-kind matrix (including `BadIdentityBinding` and `IelDivergent` cross-chain rejections) is in [reconciliation.md §Local Submissions Matrix](reconciliation.md#local-submissions-matrix).

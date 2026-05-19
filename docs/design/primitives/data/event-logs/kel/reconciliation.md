@@ -316,7 +316,7 @@ The matrix is symmetric in race participants — `Rec-vs-Ror` covers both `Rec` 
 
 ## References
 
-- [docs/design/kel/events.md](events.md) — Per-kind reference: kinds, field rules, chain shapes.
-- [docs/design/kel/event-log.md](event-log.md) — KEL chain lifecycle: states, divergence, recovery, contested-state transitions, decommission, proactive-ROR seal, discriminator algorithm.
-- [docs/design/kel/merge.md](merge.md) — KEL merge engine; `MergeTransaction` API and full routing.
-- [docs/design/sel/event-log.md](../sel/event-log.md) — SEL counterpart; the discriminator and pending-bundling shape are mirrored on both sides.
+- [events.md](events.md) — Per-kind reference: kinds, field rules, chain shapes.
+- [event-log.md](event-log.md) — KEL chain lifecycle: states, divergence, recovery, contested-state transitions, decommission, proactive-ROR seal, discriminator algorithm.
+- [merge.md](merge.md) — KEL merge engine; `MergeTransaction` API and full routing.
+- [../sel/event-log.md](../sel/event-log.md) — SEL counterpart; the discriminator and pending-bundling shape are mirrored on both sides.
