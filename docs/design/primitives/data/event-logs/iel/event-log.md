@@ -404,7 +404,7 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 - `lib/kels/src/types/iel/event.rs` — `IdentityEventKind` enum (`Icp`/`Evl`/`Dec`); `validate_structure` per per-kind field rules.
 - `lib/kels/src/types/iel/verification.rs` — `IelVerifier`, `IelVerification`, branch state with tracked `authPolicy` and tracked `governancePolicy`. `is_contested = true` is a verifier-side flag derived from observing any divergent set (every IEL event is privileged).
 - `lib/kels/src/identity_builder.rs` — `IdentityEventBuilder` with `evolve()`, `decommission()`; pending-events bundling; pre-flight server-chain re-verification.
-- Server submit handler — terminal gate, immunity gate, divergent-rejection routing (returns `ContestedIel` for any submission to a divergent chain — divergent IEL is contested-terminal by privileged-divergence-is-terminal, with no repair primitive), algorithmic `ContestRequired` trigger for events at-or-before evaluation seal on linear chains.
+- Server submit handler — terminal gate, immunity gate, divergent-rejection routing (returns `ContestedIel` for any submission to a divergent chain — divergent IEL is contested-terminal by privileged-divergence-is-terminal, with no repair primitive), algorithmic `ParentLocked` trigger for events at-or-before evaluation seal on linear chains.
 - Storage — `iel_events` table. **No archive table** (no `Rpr` to archive into).
 
 **Notable simplifications vs. SEL:**

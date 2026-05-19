@@ -214,14 +214,14 @@ A SEL transitions to Contested when a non-archiving privileged event (`Sea` or `
 
 **Distinction from Rpr.** The archiving `Rpr` and a non-archiving privileged event with `previous = v_{d-1}.said` share parent shape but differ in effect. `Rpr` archives the other events at `v_d` via the discriminator (chain repairs, continues with `Rpr` as the new `v_d`). Non-archiving privileged events join the divergent set without archival (privileged-divergence fires; chain ends). The kind discriminator (archiving `Rpr` vs non-archiving `Sea`/`Dec`) determines the outcome.
 
-### Algorithmic trigger — `ContestRequired`
+### Algorithmic trigger — `ParentLocked`
 
-The merge engine returns `ContestRequired { reason }` when:
+The merge engine returns `ParentLocked { reason }` when:
 - The submitted event is non-terminal AND non-Rpr.
 - The event is at-or-before `lastSealAdvancingEvent` in chain order (the submitter's view is at-or-before the evaluation seal — someone with governance authority advanced the seal past the submitter's view).
 - The chain is not divergent (divergence routes to `RepairRequired` instead).
 
-`ContestRequired` signals that the seal has advanced past the submitter's view; the submitter must accept the new state (re-fetch and re-submit at a higher serial), decommission the chain via `Dec`, or abandon and reincept under a new prefix.
+`ParentLocked` signals that the seal has advanced past the submitter's view; the submitter must accept the new state (re-fetch and re-submit at a higher serial), decommission the chain via `Dec`, or abandon and reincept under a new prefix.
 
 ## Operator recourse against compromise
 
@@ -276,10 +276,10 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 | Linear (active) | non-archiving privileged event (`Sea` or `Dec`) with `previous = v_{d-1}.said` | Insert; creates divergence at `v_d` (existing tip + new event); privileged-divergence rule fires; chain becomes contested-terminal. |
 | Linear, overlap (fork, non-privileged events) | concurrent `Upd` (v ≥ 2) or concurrent `Est` (v = 1, brand-new-chain race) | Insert second event at `v_d`; chain becomes Divergent (non-privileged); recoverable via `Rpr`. |
 | Linear, overlap (fork, includes privileged) | concurrent governance event | Insert second event at `v_d`; privileged-divergence rule fires; chain becomes contested-terminal. |
-| Linear, post-evaluation-seal | non-terminal/non-`Rpr` with valid kind-relevant auth | `ContestRequired { reason }` (algorithmic trigger; seal has advanced past submitter's view). |
+| Linear, post-evaluation-seal | non-terminal/non-`Rpr` with valid kind-relevant auth | `ParentLocked { reason }` (algorithmic trigger; seal has advanced past submitter's view). |
 | Linear (any) | `Dec` | Insert at tip, mark decommissioned. |
 | Divergent (non-privileged), unsealed | `Rpr` | Discriminator-driven repair. Branch-tip-extending Rpr: `Rpr.previous` is a branch tip at `v_d`, Rpr extends it at `v_{d+1}`, the other branch archived. Divergence-ancestor-extending Rpr: `Rpr.previous = v_{d-1}.said`, Rpr lands at `v_d`, both branches at `v_d` archived (used when both branches are adversary-planted). `Repaired`. |
-| Linear (post-`Rpr`, seal at v_d) | `Rpr` extending `v_{d-1}.said` (same parent as the seal-defining Rpr) | `ContestRequired` (seal-cap / locked-portion bound rejects truncation at-or-before the seal). |
+| Linear (post-`Rpr`, seal at v_d) | `Rpr` extending `v_{d-1}.said` (same parent as the seal-defining Rpr) | `ParentLocked` (seal-cap / locked-portion bound rejects truncation at-or-before the seal). |
 | Divergent (non-privileged) | non-archiving privileged event (`Sea` or `Dec`) with `previous = v_{d-1}.said` (joins divergent set via upgrade rule) | Insert as 3rd event at `v_d`; chain becomes contested-terminal. |
 | Divergent (non-privileged) | other events (`Upd`/`Sea`/`Dec`) | `RepairRequired`. Chain unchanged. |
 | Contested | any | Rejected with `ContestedSel`. |
@@ -294,7 +294,7 @@ The full sealed/unsealed × per-kind matrix (including `BadIdentityBinding` and 
 - `lib/kels/src/types/sad/event.rs` — `SadEventKind` enum (`Icp`/`Est`/`Upd`/`Sea`/`Rpr`/`Dec`); `validate_structure` per per-kind field rules. The inception batch rule is a chain-validity rule lifted into the verifier (it is not per-event, so it has no place in `validate_structure`).
 - `lib/kels/src/types/sad/verification.rs` — `SelVerifier`, `SelVerification`. Branch state holds the branch tip's `ielEvent` for the per-event parent-monotonic check on the next event extending the branch; authorization policies are not tracked per branch (they resolve through IEL on demand). The chain-wide `lastIelEvent` is a derived aggregate (max across branches), not a flowing watermark gate. `finish_internal` enforces the inception batch rule (`IncompleteInception` whenever any branch tip is `Icp`).
 - `lib/kels/src/sad_builder.rs` — `SadEventBuilder` with `update()`, `seal()`, `repair()`, `decommission()`; pending-events bundling; pre-flight server-chain re-verification (factored helper `verify_server_chain_pre_action`).
-- `services/sadstore/src/handlers.rs` — submit handler: structural + IEL-resolved-authorization gate, terminal-state gate, divergence routing, `ContestRequired` algorithmic trigger.
+- `services/sadstore/src/handlers.rs` — submit handler: structural + IEL-resolved-authorization gate, terminal-state gate, divergence routing, `ParentLocked` algorithmic trigger.
 - `services/sadstore/src/repository.rs` — `truncate_and_replace` discriminator (single-page fetch + resume-verify trust gate + walkback + archival).
 
 ## References

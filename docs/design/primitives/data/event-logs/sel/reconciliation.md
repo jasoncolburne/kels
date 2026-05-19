@@ -31,7 +31,7 @@ These invariants are what make synchronous archival, single-page discriminator w
 | **Empty** | No events for this prefix. |
 | **Incepted, no v1** | Reachable transient state: someone submitted just `[Icp]`. **The verifier rejects this** (`SelVerifier::finish_internal` → `IncompleteInception` whenever any branch tip is `Icp`), so this state should never persist in storage; included here for completeness. |
 | **Active** | Linear, non-divergent, no terminal event. |
-| **Active, sealed** | Sub-state of Active where the submitter's view lands at-or-before `lastSealAdvancingEvent` (a governance-authorized party has advanced the seal past the submitter). Non-terminal `Upd`/`Sea` submissions return `ContestRequired`. |
+| **Active, sealed** | Sub-state of Active where the submitter's view lands at-or-before `lastSealAdvancingEvent` (a governance-authorized party has advanced the seal past the submitter). Non-terminal `Upd`/`Sea` submissions return `ParentLocked`. |
 | **Divergent** | Fork detected, no `Rpr`/`Dec` yet. |
 | **Divergent, sealed** | Sub-state of Divergent where the seal has advanced past the divergence point — typically via a `Rpr` or `Sea` that landed before resolution. Submitter's only legitimate response is `Dec`, or accept the new state. |
 | **Repaired** | Clean chain after `Rpr` archived adversary events. |
@@ -47,9 +47,9 @@ What happens when a client submits events to the submit handler on a single node
 | **Empty** (no Icp) | Reject (no chain) | Reject | Reject | Reject |
 | **Empty** (`[Icp, Est]` minimum) | Append ✓ if `ielEvent` binding + anchor satisfy IEL authPolicy; else `BadIdentityBinding` | n/a | n/a | n/a |
 | **Active** | Append ✓ (authPolicy via IEL) | Append ✓; if creates overlap → Contested | Repair ✓ (clean: no-op archival; adversary extension: archives adversary chain) | Append ✓ → Decommissioned (linear) or Contested (creates divergence at `v_d`) |
-| **Active, sealed** (`Upd`/`Sea` at-or-before `lastSealAdvancingEvent` in chain order) | `ContestRequired` | `ContestRequired` (the seal-cap rejects any extension of `v_{seal-1}`) | `ContestRequired` (the seal-cap rejects any extension of `v_{seal-1}`) | `ContestRequired` (the seal-cap rejects any extension of `v_{seal-1}`) |
+| **Active, sealed** (`Upd`/`Sea` at-or-before `lastSealAdvancingEvent` in chain order) | `ParentLocked` | `ParentLocked` (the seal-cap rejects any extension of `v_{seal-1}`) | `ParentLocked` (the seal-cap rejects any extension of `v_{seal-1}`) | `ParentLocked` (the seal-cap rejects any extension of `v_{seal-1}`) |
 | **Divergent** | `RepairRequired` | `RepairRequired` (linear); extending `v_{d-1}` → Contested via upgrade rule | Discriminator-driven repair ✓ | `RepairRequired` (linear); extending `v_{d-1}` → Contested via upgrade rule |
-| **Divergent (sealed)** | `ContestRequired` | `ContestRequired` | `ContestRequired` (seal-cap rejects truncation at-or-before the seal) | `ContestRequired` (linear); extending `v_{d-1}` → Contested via upgrade rule |
+| **Divergent (sealed)** | `ParentLocked` | `ParentLocked` | `ParentLocked` (seal-cap rejects truncation at-or-before the seal) | `ParentLocked` (linear); extending `v_{d-1}` → Contested via upgrade rule |
 | **Repaired** | Same as Active | Same as Active | Same as Active | Same as Active |
 | **Contested** | `ContestedSel` | `ContestedSel` | `ContestedSel` | `ContestedSel` |
 | **Decommissioned** | `DecommissionedSel` | `DecommissionedSel` * | `DecommissionedSel` | `DecommissionedSel` * |
@@ -63,7 +63,7 @@ Additional rejection cases that don't fit per-state cells:
 
 - **Contested-state transition on an Active (non-sealed) chain** — A non-archiving privileged event (`Sea` or `Dec`) with `previous = v_{d-1}.said` creates a 2-event divergent set at `v_d` (the new event + the existing non-privileged event at `v_d`); privileged-divergence-is-terminal fires. On `Active, sealed`, the seal-cap rejects this construction (parent in locked portion). See [event-log.md §Contested-state transitions](event-log.md#contested-state-transitions).
 - **Contested-state transition (divergent chain)** — A non-archiving privileged event with `previous = v_{d-1}.said` joins the divergent set as a third event via the upgrade rule.
-- **`Sea` / `Upd` `ContestRequired` on Active, sealed** — non-terminal, non-`Rpr` event at-or-before `lastSealAdvancingEvent` would re-evaluate the seal; the submitter must accept the new state, decommission via `Dec`, or abandon. See [merge.md §`ContestRequired` algorithmic trigger](merge.md#contestrequired-algorithmic-trigger).
+- **`Sea` / `Upd` `ParentLocked` on Active, sealed** — non-terminal, non-`Rpr` event at-or-before `lastSealAdvancingEvent` would re-evaluate the seal; the submitter must accept the new state, decommission via `Dec`, or abandon. See [merge.md §`ParentLocked` algorithmic trigger](merge.md#ParentLocked-algorithmic-trigger).
 - **Active, sealed and Divergent (sealed) — all kinds extending `v_{seal-1}` / `v_{d-1}`** — the seal-cap rejects every submission whose parent sits in the locked portion. When the rejected submission originated from another federation peer's locally-landed priv event (concurrent priv-vs-priv race — `Sea-vs-Sea`, `Sea-vs-Dec`, `Rpr-vs-Rpr`, `Rpr-vs-Sea`, etc.), the chain does not structurally converge with that peer; federation-level convergence resolves at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)). The per-race-shape enumeration is in [§Race matrix](#race-matrix) below.
 - **Decommissioned** — fully terminal. All submissions return `DecommissionedSel`. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [#205](https://github.com/jasoncolburne/kels/issues/205) and [§Race matrix](#race-matrix) below).
 
@@ -150,7 +150,7 @@ The single-page-fetch + resume-verifier trust gate + in-memory walkback shape mi
 
 ### 1. Adversary Sea as normal append
 
-The adversary submits `Sea` to a non-divergent chain (normal append, no divergence) — possible if the adversary satisfies the bound IEL's `governancePolicy` (e.g., a controller of one of the endorsing KELs went rogue). This advances the seal. Any future divergence at serial ≤ the new seal triggers `ContestRequired`.
+The adversary submits `Sea` to a non-divergent chain (normal append, no divergence) — possible if the adversary satisfies the bound IEL's `governancePolicy` (e.g., a controller of one of the endorsing KELs went rogue). This advances the seal. Any future divergence at serial ≤ the new seal triggers `ParentLocked`.
 
 ```
 Pre-state (linear at v_N; seal at last Sea/Rpr ≤ N):
@@ -164,7 +164,7 @@ satisfied via bound IEL's current governancePolicy):
 
 Effect: chain stays linear; seal advances. Any subsequent submission whose
 parent sits at-or-before v_N is rejected by the seal-cap with
-ContestRequired (or DecommissionedSel / ContestedSel if the chain has
+ParentLocked (or DecommissionedSel / ContestedSel if the chain has
 already transitioned to a terminal state). The seal-cap is unconditional;
 no boundary case admits competing privileged events at a sealed serial.
 Federation races between concurrent competing privileged submissions
@@ -425,7 +425,7 @@ Gossip propagates:
 
   Node B (Active at v_d via sea_alt) receives dec:
     dec.parent_serial = d-1 < seal_serial = d
-    → rejected by seal-cap with ContestRequired.
+    → rejected by seal-cap with ParentLocked.
     B's state unchanged: Active with sea_alt as tip.
 
   Effective SAIDs:
@@ -442,11 +442,11 @@ Enumeration of concurrent priv-vs-priv races between federation peers, both subm
 
 | Race kind  | Receiving-node state at gossip arrival | Outcome |
 |------------|----------------------------------------|---------|
-| Rpr-vs-Rpr | Active-sealed (Rpr at `v_d`) | `ContestRequired`; non-converging; #205 |
-| Rpr-vs-Sea | Active-sealed (Rpr/Sea at `v_d`) | `ContestRequired`; non-converging; #205 |
-| Rpr-vs-Dec | Active-sealed / Decommissioned | `ContestRequired` / `DecommissionedSel`; non-converging; #205 |
-| Sea-vs-Sea | Active-sealed (Sea at `v_d`) | `ContestRequired`; non-converging; #205 |
-| Sea-vs-Dec | Active-sealed / Decommissioned | `ContestRequired` / `DecommissionedSel`; non-converging; #205 |
+| Rpr-vs-Rpr | Active-sealed (Rpr at `v_d`) | `ParentLocked`; non-converging; #205 |
+| Rpr-vs-Sea | Active-sealed (Rpr/Sea at `v_d`) | `ParentLocked`; non-converging; #205 |
+| Rpr-vs-Dec | Active-sealed / Decommissioned | `ParentLocked` / `DecommissionedSel`; non-converging; #205 |
+| Sea-vs-Sea | Active-sealed (Sea at `v_d`) | `ParentLocked`; non-converging; #205 |
+| Sea-vs-Dec | Active-sealed / Decommissioned | `ParentLocked` / `DecommissionedSel`; non-converging; #205 |
 | Dec-vs-Dec | Decommissioned | `DecommissionedSel`; non-converging; #205 |
 
 The matrix is symmetric in race participants — `Rpr-vs-Sea` covers both `Rpr` arriving at a node with `Sea` and `Sea` arriving at a node with `Rpr`. The receiving-node-state column reflects what the local chain looks like after the local first-receive has landed; the outcome describes the gossip-arriving event's rejection.

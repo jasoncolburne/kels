@@ -10,7 +10,7 @@ All cases below depend on these invariants:
 
 1. **Proactive ROR compliance**: Every KEL has a recovery-revealing event (`rec`, `ror`, `dec`) at least every `MINIMUM_PAGE_SIZE - 2 = 62` non-revealing events. Surfaced by `KelVerifier` and enforced by the merge engine; the builder auto-inserts `ror` when the bound is about to be crossed.
 
-2. **Bounded divergence**: An adversary can only fork after the last recovery-revealing event (forking before triggers `ContestRequired`). Combined with invariant 1, divergence spans at most 62 events from the fork point. An adversary without the recovery key can only submit non-revealing events (`ixn`, `rot`), so the merge engine's proactive-ROR enforcement limits them to at most 62 events before rejection.
+2. **Bounded divergence**: An adversary can only fork after the last recovery-revealing event (forking before triggers `ParentLocked`). Combined with invariant 1, divergence spans at most 62 events from the fork point. An adversary without the recovery key can only submit non-revealing events (`ixn`, `rot`), so the merge engine's proactive-ROR enforcement limits them to at most 62 events before rejection.
 
 3. **Bounded operations**: Recovery batch (`events + rec + rot`) ≤ 64, contested-transition batch (`events + Ror`/`Dec`) ≤ 63, adversary chain to archive ≤ 62. All fit in one page (`MINIMUM_PAGE_SIZE = 64`).
 
@@ -27,7 +27,7 @@ These invariants are what make synchronous archival, single-page discriminator w
 | **Contested** | Divergent set contains a non-archiving privileged event (`Ror` or `Dec`); no event of any kind lands |
 | **Decommissioned** | Exactly one `Dec`, ending a clean (linear) chain. Fully terminal: all submissions rejected by the seal-cap. |
 
-"Divergent with recovery revealed" is a sub-state of **Divergent** where a recovery-revealing event exists on one branch since the divergence point. A non-archiving privileged event (`Ror` or `Dec`) extending `v_{d-1}` joins the divergent set via the upgrade rule → Contested. Competing `Rec` against `v_{d-1}` and non-priv submissions both return `ContestRequired` (locked-portion bound).
+"Divergent with recovery revealed" is a sub-state of **Divergent** where a recovery-revealing event exists on one branch since the divergence point. A non-archiving privileged event (`Ror` or `Dec`) extending `v_{d-1}` joins the divergent set via the upgrade rule → Contested. Competing `Rec` against `v_{d-1}` and non-priv submissions both return `ParentLocked` (locked-portion bound).
 
 ## Local Submissions Matrix
 
@@ -37,9 +37,9 @@ What happens when a client submits events to the merge engine on a single node.
 |-----------|---------|-----|---------------|-----|
 | **Empty** | Reject (no KEL) | Reject | Reject | Reject |
 | **Active** | Append ✓ | Append ✓ (linear or contested-creating; see notes) | Append ✓ (gossip-sync of recovered KELs) | Append ✓ → Decommissioned (linear) or Contested (creates divergence at `v_d`) |
-| **Active, sealed** (`ixn`/`rot`/`ror` would land at-or-before `lastSealAdvancingEvent` in chain order) | `ContestRequired` | `ContestRequired` (the seal-cap rejects any extension of `v_{seal-1}`) | `ContestRequired` (the seal-cap rejects any extension of `v_{seal-1}`) | `ContestRequired` (the seal-cap rejects any extension of `v_{seal-1}`) |
+| **Active, sealed** (`ixn`/`rot`/`ror` would land at-or-before `lastSealAdvancingEvent` in chain order) | `ParentLocked` | `ParentLocked` (the seal-cap rejects any extension of `v_{seal-1}`) | `ParentLocked` (the seal-cap rejects any extension of `v_{seal-1}`) | `ParentLocked` (the seal-cap rejects any extension of `v_{seal-1}`) |
 | **Divergent** | `RecoverRequired` | `RecoverRequired` (linear); extending `v_{d-1}` → Contested via upgrade rule | Recovered ✓ (creates `RecoveryRecord`) | `RecoverRequired` (linear); extending `v_{d-1}` → Contested via upgrade rule |
-| **Divergent (recovery revealed)** | `ContestRequired` | `ContestRequired` (the seal-cap rejects any extension of `v_{d-1}` once recovery has advanced the seal past `v_d`) | `ContestRequired` (the seal-cap rejects any extension of `v_{d-1}`) | `ContestRequired` (the seal-cap rejects any extension of `v_{d-1}`) |
+| **Divergent (recovery revealed)** | `ParentLocked` | `ParentLocked` (the seal-cap rejects any extension of `v_{d-1}` once recovery has advanced the seal past `v_d`) | `ParentLocked` (the seal-cap rejects any extension of `v_{d-1}`) | `ParentLocked` (the seal-cap rejects any extension of `v_{d-1}`) |
 | **Recovered** | Same as Active | Same as Active | Same as Active | Same as Active |
 | **Contested** | `ContestedKel` | `ContestedKel` | `ContestedKel` | `ContestedKel` |
 | **Decommissioned** | `KelDecommissioned` | `KelDecommissioned` | `KelDecommissioned` | `KelDecommissioned` |
@@ -48,7 +48,7 @@ What happens when a client submits events to the merge engine on a single node.
 
 - **Contested-state transition on an Active (non-sealed) chain** — A non-archiving privileged event (`Ror` or `Dec`) with `previous = v_{d-1}.said` creates a 2-event divergent set at `v_d` (the new event + the existing non-privileged event at `v_d`); privileged-divergence-is-terminal fires. See [event-log.md §Contested-state transitions](event-log.md#contested-state-transitions).
 - **Contested-state transition via upgrade rule (divergent chain, recovery not yet revealed)** — A non-archiving privileged event with `previous = v_{d-1}.said` joins a non-privileged divergent set at `v_d` as a third event → Contested. Once any recovery-revealing event lands and advances the seal past `v_d`, the seal-cap rejects further extensions of `v_{d-1}`.
-- **Active, sealed and Divergent (recovery revealed)** — the seal-cap (`parent_serial >= seal_serial`) rejects every submission whose parent sits in the locked portion. All extensions of `v_{seal-1}` / `v_{d-1}` return `ContestRequired`. When the rejected submission originated from another federation peer's locally-landed priv event (concurrent priv-vs-priv race), the chain does not structurally converge with that peer; federation-level convergence resolves at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)). The per-race-shape enumeration is in [§Race matrix](#race-matrix) below.
+- **Active, sealed and Divergent (recovery revealed)** — the seal-cap (`parent_serial >= seal_serial`) rejects every submission whose parent sits in the locked portion. All extensions of `v_{seal-1}` / `v_{d-1}` return `ParentLocked`. When the rejected submission originated from another federation peer's locally-landed priv event (concurrent priv-vs-priv race), the chain does not structurally converge with that peer; federation-level convergence resolves at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)). The per-race-shape enumeration is in [§Race matrix](#race-matrix) below.
 - **Decommissioned** — fully terminal. All submissions return `KelDecommissioned`. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [#205](https://github.com/jasoncolburne/kels/issues/205) and [§Race matrix](#race-matrix) below).
 
 ### Batch submissions
@@ -146,7 +146,7 @@ this chain. A non-archiving privileged event (`Ror` or `Dec`) extending
 v_N.said arriving via gossip lands at v_{N+1} as a sibling of rec_x;
 privileged-divergence-is-terminal fires; chain transitions to Contested.
 Competing `Rec` against v_N is rejected by the locked-portion bound; non-priv
-extensions submitted at serial ≤ N+1 are rejected with `ContestRequired`
+extensions submitted at serial ≤ N+1 are rejected with `ParentLocked`
 (seal-cap).
 ```
 
@@ -288,7 +288,7 @@ Gossip propagates:
 
   Node B (Active at v_d via ror_alt) receives dec:
     dec.parent_serial = d-1 < seal_serial = d
-    → rejected by seal-cap with ContestRequired.
+    → rejected by seal-cap with ParentLocked.
     B's state unchanged: Active with ror_alt as tip.
 
   Effective SAIDs:
@@ -305,11 +305,11 @@ Enumeration of concurrent priv-vs-priv races between federation peers, both subm
 
 | Race kind  | Receiving-node state at gossip arrival | Outcome |
 |------------|----------------------------------------|---------|
-| Rec-vs-Rec | Active-sealed (Rec at `v_d`) | `ContestRequired`; non-converging; #205 |
-| Rec-vs-Ror | Active-sealed (Rec/Ror at `v_d`) | `ContestRequired`; non-converging; #205 |
-| Rec-vs-Dec | Active-sealed / Decommissioned | `ContestRequired` / `KelDecommissioned`; non-converging; #205 |
-| Ror-vs-Ror | Active-sealed (Ror at `v_d`) | `ContestRequired`; non-converging; #205 |
-| Ror-vs-Dec | Active-sealed / Decommissioned | `ContestRequired` / `KelDecommissioned`; non-converging; #205 |
+| Rec-vs-Rec | Active-sealed (Rec at `v_d`) | `ParentLocked`; non-converging; #205 |
+| Rec-vs-Ror | Active-sealed (Rec/Ror at `v_d`) | `ParentLocked`; non-converging; #205 |
+| Rec-vs-Dec | Active-sealed / Decommissioned | `ParentLocked` / `KelDecommissioned`; non-converging; #205 |
+| Ror-vs-Ror | Active-sealed (Ror at `v_d`) | `ParentLocked`; non-converging; #205 |
+| Ror-vs-Dec | Active-sealed / Decommissioned | `ParentLocked` / `KelDecommissioned`; non-converging; #205 |
 | Dec-vs-Dec | Decommissioned | `KelDecommissioned`; non-converging; #205 |
 
 The matrix is symmetric in race participants — `Rec-vs-Ror` covers both `Rec` arriving at a node with `Ror` and `Ror` arriving at a node with `Rec`. The receiving-node-state column reflects what the local chain looks like after the local first-receive has landed; the outcome describes the gossip-arriving event's rejection.

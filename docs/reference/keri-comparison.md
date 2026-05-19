@@ -765,7 +765,7 @@ compute_rotation_hash(), compute_approval_threshold()
 
 ```
 NotFound, InvalidKeyEvent, SignatureVerificationFailed,
-KelDecommissioned, ContestRequired, DivergenceDetected
+KelDecommissioned, ParentLocked, DivergenceDetected
 ```
 
 ### Side-by-Side Comparison
@@ -874,7 +874,7 @@ Consider a cryptographer with strong knowledge of public key infrastructure, has
 **KERIpy has more concepts to learn:** witnesses, watchers, jurors, judges, registrars, OOBIs, TELs, ACDCs, receipt thresholds, witness rotation, delegation approval, partial rotation — each with its own abbreviated naming.
 
 **KELS:**
-- The cryptographer dives into divergence handling, recovery semantics, and the merge transaction. These are complex but documented in the type system — `KelMergeResult` has variants `Accepted`, `Recovered`, `Contested`, `Diverged`, `RecoverRequired`, `ContestRequired` that enumerate the state machine explicitly.
+- The cryptographer dives into divergence handling, recovery semantics, and the merge transaction. These are complex but documented in the type system — `KelMergeResult` has variants `Accepted`, `Recovered`, `Contested`, `Diverged`, `RecoverRequired`, `ParentLocked` that enumerate the state machine explicitly.
 - The gossip protocol (HyParView + PlumTree) is a standard distributed-systems pattern with extensive external literature; the federation model expresses membership and governance as ordinary IEL operations and uses the same policy DSL the rest of the system uses.
 - The verification model's advisory locking and TOCTOU prevention are sophisticated but follow established database patterns.
 

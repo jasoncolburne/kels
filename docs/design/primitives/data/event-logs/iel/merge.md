@@ -9,7 +9,7 @@ The submit handler integrates new events into an existing IEL while handling:
 - Idempotent resubmissions (dedup by SAID)
 - Divergence detection (conflicting events at the same serial) → chain transitions to contested-terminal directly
 - Decommission (`Dec`) — terminal event ending the chain
-- Algorithmic `ContestRequired` for normal-event submissions that land at-or-before the evaluation seal on a linear chain (the seal has advanced past the submitter's view)
+- Algorithmic `ParentLocked` for normal-event submissions that land at-or-before the evaluation seal on a linear chain (the seal has advanced past the submitter's view)
 
 Events are linked by their `previous` SAID. Authority is via the anchoring model — the server does NOT verify signatures on submit; consumers verify when they use the data. Every IEL event is governance-authorized: the chain's `governancePolicy` (declared at `Icp`, evolvable via `Evl`) is the gate for every kind including `Icp` itself. The chain's `authPolicy` is reserved for SEL Upd authorization through `ielEvent` binding (see [../sel/events.md](../sel/events.md)).
 
@@ -29,13 +29,13 @@ Server errors map to:
 | Error | Meaning | Chain state after |
 |---|---|---|
 | `Ok({applied: true, ...})` | Batch accepted | linear / contested (= divergent) / decommissioned per batch contents |
-| `ContestRequired { reason }` | Normal-event submission at-or-before `lastSealAdvancingEvent` in chain order on a linear chain | unchanged |
+| `ParentLocked { reason }` | Normal-event submission at-or-before `lastSealAdvancingEvent` in chain order on a linear chain | unchanged |
 | `ContestedIel` | Submission to a chain that is divergent (= contested-terminal on IEL) | terminal, unchanged |
 | `IelDecommissioned` | Submission to a chain with a `Dec` event in it | terminal, unchanged |
 | `NotImmunePolicy { policy }` | Icp or Evl introducing/evolving a non-immune policy | unchanged |
 | `InvalidIel(reason)` | Structural validation failure | unchanged |
 
-**Note on `ContestRequired` vs `ContestedIel`.** Divergent IEL is structurally contested-terminal, so divergent IEL → `ContestedIel`, not `ContestRequired`. The latter is reserved for the seal-cap case on linear IEL chains.
+**Note on `ParentLocked` vs `ContestedIel`.** Divergent IEL is structurally contested-terminal, so divergent IEL → `ContestedIel`, not `ParentLocked`. The latter is reserved for the seal-cap case on linear IEL chains.
 
 ## Submit Flow
 
@@ -104,7 +104,7 @@ let is_decommission = new_events.iter().any(|e| e.kind.is_decommission());
 
 if is_decommission → decommission path (insert + mark decommissioned)
 else if event is at-or-before `lastSealAdvancingEvent` in chain order
-        AND policy satisfied AND non-terminal → reject ContestRequired
+        AND policy satisfied AND non-terminal → reject ParentLocked
 else if event creates a fork (overlap) → insert single concurrent event at v_d;
                                          the new 2-event divergent set is
                                          privileged → chain transitions to
@@ -125,7 +125,7 @@ Detected when any batch event has `kind = Dec`. Inserts the batch; no archival. 
 
 Events chain from the current tip, no divergence, no terminal kind in batch. Inserts via `save_batch`. Returns `applied: true`.
 
-#### `ContestRequired` algorithmic trigger
+#### `ParentLocked` algorithmic trigger
 
 Before inserting a non-terminal event, the handler checks:
 
@@ -134,7 +134,7 @@ if event is at-or-before `lastSealAdvancingEvent` in chain order
    AND policy is satisfied
    AND event.kind is non-terminal
    AND chain is not divergent:
-   → return ContestRequired { reason: "..." }
+   → return ParentLocked { reason: "..." }
 ```
 
 This fires when a write-authorized normal event would land at or before the evaluation seal — meaning the seal has advanced past the submitter's view of the chain. The submitter has authority but cannot proceed via normal append; they must accept the new state and re-submit at a higher serial, contest, or abandon.

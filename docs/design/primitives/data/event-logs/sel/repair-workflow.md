@@ -27,7 +27,7 @@ Each operation runs the same pre-flight:
 - Build the appropriate event extending the bundled-pending tip (or owner's verified tip if pending is empty).
 - Submit `[pending..., Rpr/Dec]` atomically.
 
-If the chain is sealed past the operator's view (`ContestRequired` returned by submit), neither `repair` nor a normal append is valid for the operator's current state. The paths are:
+If the chain is sealed past the operator's view (`ParentLocked` returned by submit), neither `repair` nor a normal append is valid for the operator's current state. The paths are:
 
 - **Accept the new state** — pull the latest chain and re-submit at the new tip.
 - **`decommission`** — end the chain cleanly.
@@ -73,7 +73,7 @@ When a chain divergence is observed:
 2. Owner inspects server: `kels-cli sel get <prefix>` returns the divergent branches.
 3. Owner decides based on chain state:
    - **Non-privileged divergence** (Upd-Upd race or Est-Est race) with seal not advanced past their view → run `repair`. Adversary events archived synchronously.
-   - **Sealed past view** (`ContestRequired` returned by submit) → accept the new state, run `decommission`, or rotate the bound IEL's governance via IEL `Evl` (out-of-band recourse if the IEL-side governance has been compromised).
+   - **Sealed past view** (`ParentLocked` returned by submit) → accept the new state, run `decommission`, or rotate the bound IEL's governance via IEL `Evl` (out-of-band recourse if the IEL-side governance has been compromised).
    - **Chain no longer needed** → run `decommission`.
 4. Gossip propagates the resolution to all peer nodes.
 

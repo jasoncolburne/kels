@@ -11,7 +11,7 @@ The submit handler in `services/sadstore/src/handlers.rs::submit_sad_events` int
 - Divergence detection (conflicting events at the same serial)
 - Repair (`Rpr`) — discriminator-driven archival of the events on the branch not extended by `Rpr.previous`
 - Decommission (`Dec`) — terminal event ending the chain
-- Algorithmic `ContestRequired` for normal-event submissions when the seal has advanced past the submitter's view
+- Algorithmic `ParentLocked` for normal-event submissions when the seal has advanced past the submitter's view
 
 Events are linked by their `previous` SAID. Authority is via the anchoring model — the server does NOT verify signatures on submit; consumers verify when they use the data. **Authorization for v1+ events is resolved through the bound IEL** via each event's `ielEvent` field. See [event-log.md §Authorization via IEL](event-log.md#authorization-via-iel).
 
@@ -29,7 +29,7 @@ Server errors map to:
 | Error | Meaning | Chain state after |
 |---|---|---|
 | `Ok({applied: true, ...})` | Batch accepted | linear / divergent / contested / decommissioned per batch contents |
-| `ContestRequired { reason }` | Normal-event at-or-before `lastSealAdvancingEvent` in chain order (write-authorized but seal advanced past submitter's view) | unchanged |
+| `ParentLocked { reason }` | Normal-event at-or-before `lastSealAdvancingEvent` in chain order (write-authorized but seal advanced past submitter's view) | unchanged |
 | `RepairRequired` | Non-Rpr submission to a divergent chain | unchanged |
 | `ContestedSel` | Submission to a Contested chain (divergent set containing a non-archiving privileged event) | terminal, unchanged |
 | `DecommissionedSel` | Submission to a chain with a `Dec` event in it. Decommissioned is fully terminal; the seal-cap rejects every submission whose parent sits at-or-before `v_{d-1}`. | terminal |
@@ -123,21 +123,21 @@ let is_sealed       =
     divergenceAncestor.is_some() && last_seal_advancing_event_is_at_or_after(divergenceAncestor);
 
 if is_repair:
-    if is_divergent and is_sealed → reject ContestRequired
+    if is_divergent and is_sealed → reject ParentLocked
                                     (can't truncate behind the seal)
     else                          → repair path (truncate_and_replace)
 elif is_decommission:
     if is_divergent               → reject RepairRequired (unsealed) /
-                                    ContestRequired (sealed)
+                                    ParentLocked (sealed)
     else                          → decommission path (insert + mark decommissioned)
 elif is_divergent:
-    if is_sealed                  → reject ContestRequired (Upd/Sea on sealed-divergent)
+    if is_sealed                  → reject ParentLocked (Upd/Sea on sealed-divergent)
     else                          → reject RepairRequired
 elif normal-event
        AND event is at-or-before `lastSealAdvancingEvent` in chain order
        AND kind-relevant authorization satisfied
        AND event.kind is non-terminal:
-                                    → reject ContestRequired (algorithmic trigger)
+                                    → reject ParentLocked (algorithmic trigger)
 elif event creates a fork (overlap):
                                     → insert single forking event; if the divergent
                                       set contains a non-archiving privileged event
@@ -172,7 +172,7 @@ Detected when any batch event has `kind = Dec`. Inserts the batch; no archival. 
 
 Events chain from the current tip, no divergence, no terminal kind in batch. Inserts via `save_batch`. Returns `applied: true`.
 
-#### `ContestRequired` algorithmic trigger
+#### `ParentLocked` algorithmic trigger
 
 Before inserting a non-terminal event, the handler checks:
 
@@ -181,16 +181,16 @@ if event is at-or-before `lastSealAdvancingEvent` in chain order
    AND kind-relevant authorization was satisfied (from §1)
    AND event.kind is non-terminal
    AND chain is not divergent:
-   → return ContestRequired { reason: "..." }
+   → return ParentLocked { reason: "..." }
 ```
 
 This fires when an authorized non-terminal event would land at or before the evaluation seal — meaning the seal has advanced past the submitter's view of the chain (someone with governance authority issued a `Sea`/`Rpr` while the submitter had stale state). The submitter has authority but cannot proceed via normal append; they must accept, contest, or abandon.
 
-"Kind-relevant authorization" means each kind's gate uses the appropriate IEL-resolved policy: `Upd` checks `authPolicy`; `Sea` checks `governancePolicy`. Both kinds use the same algorithmic `ContestRequired` gate here — what differs is which policy the §1 check ran against.
+"Kind-relevant authorization" means each kind's gate uses the appropriate IEL-resolved policy: `Upd` checks `authPolicy`; `Sea` checks `governancePolicy`. Both kinds use the same algorithmic `ParentLocked` gate here — what differs is which policy the §1 check ran against.
 
-The trigger fires after §1's anchoring check has already passed upstream. The `ContestRequired` trigger combines two things: the existing-chain sanity floor (chain wasn't already broken) and the serial-vs-seal arithmetic (the new event's serial lands at-or-before the seal).
+The trigger fires after §1's anchoring check has already passed upstream. The `ParentLocked` trigger combines two things: the existing-chain sanity floor (chain wasn't already broken) and the serial-vs-seal arithmetic (the new event's serial lands at-or-before the seal).
 
-This mirrors KEL's `ContestRequired` shape: someone else used the privileged primitive (KEL: revealed the recovery key; SEL: advanced the seal), and safe normal-flow continuation is no longer possible. The submitter must accept the new state, decommission via `Dec`, or abandon and reincept. See [event-log.md §Algorithmic trigger — `ContestRequired`](event-log.md#algorithmic-trigger--contestrequired).
+This mirrors KEL's `ParentLocked` shape: someone else used the privileged primitive (KEL: revealed the recovery key; SEL: advanced the seal), and safe normal-flow continuation is no longer possible. The submitter must accept the new state, decommission via `Dec`, or abandon and reincept. See [event-log.md §Algorithmic trigger — `ParentLocked`](event-log.md#algorithmic-trigger--ParentLocked).
 
 ### 9. Overlap (non-divergent SEL, fork-creating event)
 
@@ -221,7 +221,7 @@ All SEL queries use `ORDER BY serial ASC, CASE kind ... END ASC, said ASC` for d
 
 ## Gossip Send-Side Partitioning (divergent SELs)
 
-Propagating a divergent SEL to a remote node requires more than canonical chain ordering. The receiver's submit handler routes batches by content predicates (`is_repair`, `is_contest`, `is_decommission`, divergent-rejection); a single batch that spans the divergence point with mixed kinds may route through `RepairRequired` or `ContestRequired`, blocking propagation. The SENDER partitions the chain into sub-batches the receiver will accept under its routing rules and sends them in sequence.
+Propagating a divergent SEL to a remote node requires more than canonical chain ordering. The receiver's submit handler routes batches by content predicates (`is_repair`, `is_contest`, `is_decommission`, divergent-rejection); a single batch that spans the divergence point with mixed kinds may route through `RepairRequired` or `ParentLocked`, blocking propagation. The SENDER partitions the chain into sub-batches the receiver will accept under its routing rules and sends them in sequence.
 
 `send_divergent_sel_events` (analog of KEL's `send_divergent_events` at `lib/kels/src/types/kel/sync.rs:517`):
 
