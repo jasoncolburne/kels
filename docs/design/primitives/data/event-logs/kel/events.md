@@ -2,7 +2,7 @@
 
 Pure structural reference for KEL event kinds, per-kind field rules, and typical chain shapes.
 
-For chain lifecycle (states, divergence, recovery via discriminator, decommission, proactive-ROR invariant), see [event-log.md](event-log.md). For the merge engine that integrates submitted events server-side, see [merge.md](merge.md).
+For chain lifecycle (states, divergence, recovery via discriminator, decommission, the two parallel caps), see [event-log.md](event-log.md). For the merge engine that integrates submitted events server-side, see [merge.md](merge.md).
 
 ## Event Kinds
 
@@ -20,7 +20,7 @@ For chain lifecycle (states, divergence, recovery via discriminator, decommissio
 
 ## Per-Kind Field Rules
 
-`KeyEvent::validate_structure()` enforces these. The verifier and merge engine add chain-state checks on top (e.g., proactive-ROR enforcement; dual-signature verification against prior establishment commitments).
+`KeyEvent::validate_structure()` enforces these. The verifier and merge engine add chain-state checks on top (e.g., seal-advance and Ror cap enforcement; dual-signature verification against prior establishment commitments).
 
 ### Structural fields
 
@@ -70,13 +70,15 @@ The single-arg open form (`Delegated(delegator)`, not `Delegated(delegator, dele
 
 `Rot.anchor` and `Ror.anchor` are optional fields used for cross-chain anchoring of tier-2 and tier-3 IEL/SEL events per [../../../../protocol-doctrine.md §Anchor Tier Elevation](../../../../protocol-doctrine.md#anchor-tier-elevation). KEL itself does not consume these anchors during its own verification walk — they are read by IEL/SEL verifiers cross-chain when evaluating policy satisfaction at elevated tiers. Anchor format on `Rot`/`Ror` is identical to `Ixn.anchor`: a single `Option<Digest256>` referencing the SAID of the anchored IEL/SEL event.
 
+Anchors on `Rot` and `Ror` are structurally durable against `Rec` archival — both are seal-advancing privileged events, so a `Rec` cannot truncate at-or-before their serial (the seal-cap rejects). Tier-1 anchors (on `Ixn`) carry no such durability — a subsequent `Rec` can archive them if they land in the divergent set. The structural property: tier-2 and tier-3 anchors are non-archivable by construction; only their forging difficulty differs (tier-2 requires the rotation-key preimage; tier-3 additionally requires the recovery-key preimage).
+
 `Rec` and `Dec` are anchor-forbidden by design. `Rec`'s role is divergence resolution (archival); `Dec` ends the chain. The protocol does not conflate event semantics — anchor emission lives on forward-extension events (`Ixn`/`Rot`/`Ror`), not on the recovery or terminal primitives. Each event kind carries one explicit purpose; operators compose them rather than combining behaviors in a single event.
 
 ### Recovery-key revelation
 
-`Rec` / `Ror` / `Dec` reveal the `recoveryKey` field. Once revealed in any event on the chain, that recovery key is "spent" — future divergent events cannot be resolved via `Rec` against the spent key. After recovery-key revelation, contested-termination via a non-archiving privileged event (`Ror` or `Dec`) landing in a divergent set is the only protocol path that ends the chain.
+`Rec` / `Ror` / `Dec` reveal the `recoveryKey` field. Once revealed in any event on the chain, that recovery key is "spent" — future divergent events cannot be resolved via `Rec` against the spent key. After recovery-key revelation, contested-termination via a privileged event (`Rot`, `Ror`, or `Dec`) landing in a divergent set is the only protocol path that ends the chain.
 
-`Ror` is the proactive form: the chain holder rotates both keys ahead of the proactive-ROR cap (no divergence required), revoking any future divergent recovery a second party could attempt with the now-stale key material.
+`Ror` is the proactive form: the chain holder rotates both keys ahead of the Ror cap (no divergence required), revoking any future divergent recovery a second party could attempt with the now-stale key material.
 
 ### Forward-key commitments
 
@@ -92,13 +94,19 @@ Establishment events (every kind except `Ixn`) commit one or both forward-key di
 
 The verifier seeds `tracked_rotation_hash` / `tracked_recovery_hash` from inception and updates them on each establishment event. Future revelations are checked against the tracked digest.
 
-### Proactive-ROR bound
+### Two parallel caps
 
-`MAX_NON_REVEALING_EVENTS = MINIMUM_PAGE_SIZE - 2 = 62`. After 62 non-recovery-revealing events (i.e., events that aren't `Rec` / `Ror` / `Dec`), the next event must reveal the recovery key. The `- 2` headroom accommodates a `[rec, rot]` recovery batch fitting in one `MINIMUM_PAGE_SIZE`-bounded page.
+KEL has two caps with different membership sets, running in parallel. Each bounds a distinct property; both are protocol-fixed for cross-deployment interop.
 
-This bound caps an adversary's fork to 62 events before they need to satisfy the recovery primitive — which they cannot without the recovery key. It also bounds the synchronous archival window during recovery to a single page. The builder auto-inserts `Ror` (upgrading a `Rot`) when the bound is about to be crossed.
+**Seal-advance cap.** A seal-advancing event (`Rec`, `Ror`, or `Rot`) must land every `MINIMUM_PAGE_SIZE − 2 = 62` non-seal-advancing events. The cap bounds the chain-state advance: divergence on a chain since the last seal-advancing event is capped at 62 events on either branch, so the discriminator's archival window fits in one page. The `− 2` headroom accommodates a `[Rec, Rot]` recovery batch fitting in one `MINIMUM_PAGE_SIZE`-bounded page on every conformant deployment — `MINIMUM_PAGE_SIZE` is a protocol constant, not a per-deployment knob, so a recovery batch produced on any node verifies on every other node. See [../../../../protocol-doctrine.md §Forks are Seal-Bounded](../../../../protocol-doctrine.md#forks-are-seal-bounded).
 
-KEL's proactive-ROR bound is the structural analog of SEL's evaluation seal: both are privileged-primitive caps that bound how far an adversary can fork before they must satisfy a higher bar (recovery-key revelation on KEL; governance evaluation on SEL). The two reads on `lastSealAdvancingEvent` operate identically — see [../../../../protocol-doctrine.md §Forks are Seal-Bounded](../../../../protocol-doctrine.md#forks-are-seal-bounded) for the cross-primitive frame, and [../sel/events.md §Evaluation bound](../sel/events.md#evaluation-bound) for the SEL-side instantiation.
+**Ror cap.** A recovery-revealing event (`Rec`, `Ror`, or `Dec`) must land every 512 events. The cap bounds recovery-key-preimage staleness — prevents pure-`Rot`-forever operators from running indefinitely on an aging recovery commitment. The Ror cap is also protocol-fixed at 512 events (cross-deployment interop: if deployments diverged on the cap value, chains produced under a looser cap wouldn't verify on stricter ones). KEL-specific: SEL has no independent recovery-key concept.
+
+The two caps' membership sets diverge in two cells: `Rot` advances the seal without being recovery-revealing; `Dec` is recovery-revealing without advancing the seal (terminal, enforces but does not advance). The orthogonality is the structural property that lets the protocol bound chain-state and recovery-preimage staleness independently.
+
+**Adversary bound.** Together the two caps cap an adversary's fork to 62 events before they need to satisfy a seal-advancing primitive — which requires at least the rotation-key preimage (for `Rot`) or the recovery-key preimage (for `Rec`/`Ror`). Builder policy: when an `ixn` would exceed the seal-advance cap, auto-insert `Rot` (cheaper; no recovery-preimage advance) unless the Ror cap is also approaching, in which case auto-insert `Ror`.
+
+The seal-advance cap is the structural analog of SEL's evaluation seal — see [../sel/events.md §Evaluation bound](../sel/events.md#evaluation-bound).
 
 ## Typical Chain Shapes
 
@@ -114,7 +122,7 @@ s62 kind=ror  publicKey=kN, recoveryKey=r0,         ← proactive recovery-rotat
     rotationHash=h(kN+1), recoveryHash=h(r1)
 ```
 
-`Ror` at s62 keeps the chain inside the proactive-ROR bound. The recovery key `r0` is revealed and replaced by `r1`.
+`Ror` at s62 keeps the chain inside the seal-advance cap (and also advances the Ror cap counter). A `Rot` at s62 would also satisfy the seal-advance cap; an operator who wants to keep the recovery commitment fresh chooses `Ror`.
 
 ### Delegated inception
 

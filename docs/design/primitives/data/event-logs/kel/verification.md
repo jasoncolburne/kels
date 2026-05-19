@@ -125,8 +125,8 @@ KelVerification:
     branch_tips: Vec<BranchTip>                     // one per branch (1 = linear, N = divergent)
     is_contested: bool
     divergenceAncestor: Option<Digest256>          // SAID of v_{d-1} on a divergent chain (None on linear)
-    lastSealAdvancingEvent: Option<Digest256>     // SAID of most recent Rec/Ror (seal-cap watermark)
-    lastRecoveryRevealingEvent: Option<Digest256> // SAID of most recent Rec/Ror/Dec (spent-key)
+    lastSealAdvancingEvent: Option<Digest256>     // SAID of most recent Rec/Ror/Rot (seal-cap watermark)
+    lastRecoveryRevealingEvent: Option<Digest256> // SAID of most recent Rec/Ror/Dec (spent-key + Ror cap)
     anchored_saids: BTreeSet<Digest256>
     queried_saids: BTreeSet<Digest256>
 
@@ -170,27 +170,27 @@ Verification does NOT fail on divergence. Instead:
 The verifier's terminal-state-determination rule simplifies to:
 - Divergent at `v_d`?
   - No → linear (active or terminal-via-Dec).
-  - Yes → divergent set contains a non-archiving privileged event (`Ror` or `Dec`)?
+  - Yes → divergent set contains a privileged event (`Rot`, `Ror`, or `Dec`)?
     - Yes → contested (terminal).
     - No → divergent (recoverable via `Rec`).
 
-(`Rec` is privileged but archiving — its discriminator removes the divergent set before any divergent-set check fires, so `Rec` never appears in the divergent set at terminal-state-determination time.)
+(`Rec` is archiving — its discriminator removes the divergent set before any divergent-set check fires, so `Rec` never appears in the divergent set at terminal-state-determination time.)
 
-### Contested-state transition: non-archiving privileged event placement
+### Contested-state transition: privileged event placement
 
-A non-archiving privileged event (`Ror` or `Dec`) with `previous = v_{d-1}.said` and `serial = d` lands at `v_d` and joins or creates the divergent set, firing privileged-divergence-is-terminal. The locked-portion bound prevents `previous` from being in the chain's locked portion; on KEL the seal-cap enforces this. See [../../../../protocol-doctrine.md §Worked scenarios — contested-state creation](../../../../protocol-doctrine.md#worked-scenarios--contested-state-creation) for the cross-shape derivation and diagrams. `v_{d-1}` is the unique parent at `serial − 1` shared across all nodes by chain validity (it lands cleanly before any divergence), making the parent shape cross-node-validatable regardless of which divergent contents each node observed.
+A privileged event (`Rot`, `Ror`, or `Dec`) with `previous = v_{d-1}.said` and `serial = d` lands at `v_d` and joins or creates the divergent set, firing privileged-divergence-is-terminal. The locked-portion bound prevents `previous` from being in the chain's locked portion; on KEL the seal-cap enforces this. See [../../../../protocol-doctrine.md §Worked scenarios — contested-state creation](../../../../protocol-doctrine.md#worked-scenarios--contested-state-creation) for the cross-shape derivation and diagrams. `v_{d-1}` is the unique parent at `serial − 1` shared across all nodes by chain validity (it lands cleanly before any divergence), making the parent shape cross-node-validatable regardless of which divergent contents each node observed.
 
-**Implementation note.** The contesting event is processed inline with the chain walk. When the walk reaches `v_d`, branch state holds `v_{d-1}`'s commitments (`rotationHash` and `recoveryHash`, set when `v_{d-1}` was processed and not yet consumed by `v_d`'s establishment update). The contesting event and the existing event(s) at `v_d` are processed as siblings of the same generation, both consuming `v_{d-1}`'s commitments — the contesting event via dual-signature check, the existing tip via its own establishment check. No new cache slot in branch state.
+**Implementation note.** The contesting event is processed inline with the chain walk. When the walk reaches `v_d`, branch state holds `v_{d-1}`'s commitments (`rotationHash` and `recoveryHash`, set when `v_{d-1}` was processed and not yet consumed by `v_d`'s establishment update). The contesting event and the existing event(s) at `v_d` are processed as siblings of the same generation, both consuming `v_{d-1}`'s commitments — `Rot` via single-signature against `rotationHash`; `Ror`/`Dec` via dual-signature against both `rotationHash` and `recoveryHash`. No new cache slot in branch state.
 
 ### Upgrade rule
 
-When a node has a non-privileged divergent set at `v_d` (max 2 events, e.g., `Rot`-`Rot`, `Ixn`-`Ixn`, or `Rot`-`Ixn` race) and gossip delivers a non-archiving privileged event for that same `v_d` (`Ror` or `Dec` with `previous = v_{d-1}.said`), the verifier accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal).
+When a node has a non-privileged divergent set at `v_d` (max 2 events: `Ixn`-`Ixn` race) and gossip delivers a privileged event for that same `v_d` (`Rot`, `Ror`, or `Dec` with `previous = v_{d-1}.said`), the verifier accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal).
 
-`Rec` is the archiving exception — its discriminator removes the divergent set before any divergent-set check fires, so it never participates in the upgrade rule. See [../../../../protocol-doctrine.md §Two privileged event classes: archiving vs non-archiving](../../../../protocol-doctrine.md#two-privileged-event-classes-archiving-vs-non-archiving) for the doctrinal frame.
+`Rec` is the archiving exception — its discriminator removes the divergent set before any divergent-set check fires, so it never participates in the upgrade rule. See [../../../../protocol-doctrine.md §Privileged and archiving event classes](../../../../protocol-doctrine.md#privileged-and-archiving-event-classes) for the doctrinal frame.
 
 ### Contested-event authorization (HARD)
 
-The contesting event's dual-signature is verified against `v_{d-1}`'s commitments: signing key (preimage of `v_{d-1}`'s `rotationHash`) + recovery key (preimage of `v_{d-1}`'s `recoveryHash`). Authorization failure is HARD — a contesting event whose signatures don't verify is rejected by the verifier; the chain stays at its prior state.
+The contesting privileged event's authorization is verified against `v_{d-1}`'s commitments — `Rot` via single-signature against `rotationHash`; `Ror`/`Dec` via dual-signature against `rotationHash` AND `recoveryHash`. Authorization failure is HARD — a contesting event whose signatures don't verify is rejected by the verifier; the chain stays at its prior state. Per-kind signature shape is documented in [events.md §Authorization model](events.md#authorization-model); the HARD-at-the-merge-layer rule applies uniformly to all privileged kinds.
 
 ## Event Types and Their Signatures
 

@@ -110,13 +110,13 @@ Policy state is **branch-tracked**. Two fields:
 All events on IEL require HARD anchor: a `Dec` whose governance check fails is rejected at the verifier; the chain stays at its prior state. Structural integrity rules — SAID validity, serial monotonicity, immunity check on policy evolution — stay HARD as well.
 
 The verifier's terminal-state-determination rule on IEL is structural:
-- Divergent at `v_d`? **Yes → contested (terminal).** Every IEL event is privileged, so any divergent set on IEL contains a privileged event by construction; privileged-divergence-is-terminal fires at first 2-event observation. The "divergent-but-not-yet-contested" intermediate state doesn't arise on IEL; it exists for KEL (non-privileged Rot/Ixn divergence, recoverable via `Rec`) and SEL (non-privileged Upd divergence, recoverable via `Rpr`).
+- Divergent at `v_d`? **Yes → contested (terminal).** Every IEL event is privileged, so any divergent set on IEL contains a privileged event by construction; privileged-divergence-is-terminal fires at first 2-event observation. The "divergent-but-not-yet-contested" intermediate state doesn't arise on IEL; it exists for KEL (non-privileged Ixn-Ixn divergence, recoverable via `Rec`) and SEL (non-privileged Upd-Upd divergence at v ≥ 2, recoverable via `Rpr`).
 - Linear with a `Dec` event present? Decommissioned (terminal-via-Dec).
 - Linear without `Dec`? Active.
 
 ### Contested-state derivation
 
-On IEL, the contested chain state is derived structurally from divergence: `is_contested ⇔ is_divergent`. Every IEL event is privileged, so the verifier sets `is_contested = true` whenever it observes a divergent set. Both accessors are exposed for cross-primitive API symmetry with KEL and SEL — `is_contested()` wraps `is_divergent()` on IEL. On KEL and SEL the two diverge: a non-privileged divergent set is `is_divergent` without being `is_contested` until a non-archiving privileged event joins via the upgrade rule.
+On IEL, the contested chain state is derived structurally from divergence: `is_contested ⇔ is_divergent`. Every IEL event is privileged, so the verifier sets `is_contested = true` whenever it observes a divergent set. Both accessors are exposed for cross-primitive API symmetry with KEL and SEL — `is_contested()` wraps `is_divergent()` on IEL. On KEL and SEL the two diverge: a non-privileged divergent set is `is_divergent` without being `is_contested` until a privileged event joins via the upgrade rule.
 
 The handler-level rejection on contested/decommissioned chains is a separate seam that prevents new submits; this verifier-level mechanism handles events that reach the verifier some other way (gossip-pulled chains where the local node hadn't yet observed the terminal, resume from a stored chain that contains a terminal).
 
@@ -178,7 +178,7 @@ Accessors:
 | `governancePolicy` satisfaction | `evaluate_anchored_policy(branch.trackedGovernancePolicy, event.said)` for Evl/Dec |
 | Policy immunity | Every introduced/evolved authPolicy or governancePolicy must have `immune: true` |
 
-Note: There is no content-preservation rule (IEL has no `content` field). There is no proactive-evaluation bound (every IEL event is governance-authorized — implicit bound).
+Note: There is no content-preservation rule (IEL has no `content` field). There is no seal-advance cap (every IEL event is governance-authorized — implicit bound).
 
 ## Divergence Handling
 

@@ -72,7 +72,7 @@ When a chain divergence is observed:
 1. Owner inspects: `kels-cli sel status --prefix <prefix>` shows `divergenceAncestor: Some(said)`.
 2. Owner inspects server: `kels-cli sel get <prefix>` returns the divergent branches.
 3. Owner decides based on chain state:
-   - **Non-privileged divergence** (Upd-Upd race or Est-Est race) with seal not advanced past their view → run `repair`. Adversary events archived synchronously.
+   - **Non-privileged divergence** (`Upd`-`Upd` race at v ≥ 2) with seal not advanced past their view → run `repair`. Adversary events archived synchronously. (`Est`-`Est` race at v=1 is contested-terminal, not repair-resolvable; operator response is reincept under a new `(identity, topic)`.)
    - **Sealed past view** (`ParentLocked` returned by submit) → accept the new state, run `decommission`, or rotate the bound IEL's governance via IEL `Evl` (out-of-band recourse if the IEL-side governance has been compromised).
    - **Chain no longer needed** → run `decommission`.
 4. Gossip propagates the resolution to all peer nodes.

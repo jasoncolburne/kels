@@ -47,9 +47,9 @@ New concepts you'll meet:
 
 - Forward-key commitments — `rotationHash` and `recoveryHash` pre-commit the next pair of keys; the revealing event must produce a matching preimage.
 - The recovery-revealing event class — `Rec`/`Ror`/`Dec` each reveal the recovery key; all three are dual-signed.
-- Within that class, `Rec` is the discriminator-based recovery primitive (the only kind that archives), with two parent shapes — branch-tip-extending and divergence-ancestor-extending. `Ror`/`Dec` are recovery-revealing but non-archiving.
-- Proactive-ROR bound — a protocol-level cap on how many non-revealing events can sit between recovery-revealing events.
-- The upgrade rule — a non-privileged divergent set plus a gossip-delivered non-archiving privileged event upgrades the chain to contested. Applies to KEL and SEL; IEL is exempt because every IEL event is privileged.
+- Within that class, `Rec` is the discriminator-based recovery primitive (the only kind that archives), with two parent shapes — branch-tip-extending and divergence-ancestor-extending. `Ror`/`Dec` are recovery-revealing but privileged (do not archive).
+- Two parallel caps — the seal-advance cap bounds how many non-seal-advancing events can sit between `Rec`/`Ror`/`Rot` (62, derived from `MINIMUM_PAGE_SIZE − 2`); the Ror cap bounds how many events can sit between recovery-revealing events `Rec`/`Ror`/`Dec` (512, bounding recovery-preimage staleness). The privileged class (`Rot`/`Ror`/`Dec` plus the archiving `Rec`) and the recovery-revealing class (`Rec`/`Ror`/`Dec`) are distinct but overlapping concepts: the seal-advance cap uses the privileged-plus-archiving membership; the Ror cap uses the recovery-revealing membership.
+- The upgrade rule — a non-privileged divergent set plus a gossip-delivered privileged event upgrades the chain to contested. Applies to KEL and SEL; IEL is exempt because every IEL event is privileged.
 
 Read in order: [events.md](primitives/data/event-logs/kel/events.md) → [event-log.md](primitives/data/event-logs/kel/event-log.md) → [merge.md](primitives/data/event-logs/kel/merge.md) → [verification.md](primitives/data/event-logs/kel/verification.md) → [reconciliation.md](primitives/data/event-logs/kel/reconciliation.md). Supplemental: [recovery-workflow.md](primitives/data/event-logs/kel/recovery-workflow.md) for the operational walkthrough of `Rec` ceremonies.
 

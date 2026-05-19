@@ -227,44 +227,40 @@ Parent-monotonic prevents an adversary from extending a branch with a regressed 
 
 Parent-monotonic does NOT prevent three scenarios. None breaks the system: each has a structural mitigation covered in [§Consumer-side discipline](#consumer-side-discipline), [§Governance-evolution ratchet via Sea](#governance-evolution-ratchet-via-sea), or [§Application-developer enrollment patterns](#application-developer-enrollment-patterns). The three are worth understanding when designing enrollment flows and operator routines.
 
-#### Brand-new chain races (not blocked)
+#### Brand-new chain races (contested-terminal — mutual destruction at v=1)
 
-Before any legitimate v1+ event lands, a party with `authPolicy` authority on the bound IEL can submit `[Icp, Est_stale]` first, establishing the chain with their content at v1. The legitimate operator's enrollment-time response is `[Icp, Est_legit]` — `Icp` dedups (same content, same SAID across submitters); `Est_legit` lands at v=1 with `parent = Icp.said` (extending `Icp` via dedup-equivalence per [../../../../protocol-doctrine.md §Extension Discipline](../../../../protocol-doctrine.md#extension-discipline); operators never extend adversary events). This creates a non-privileged divergent set with `Est_stale` — both auth-authorized; Est-Est race shape.
+Before any legitimate v1+ event lands, a party with `authPolicy` authority on the bound IEL can submit `[Icp, Est_camper]` first, establishing the chain with their content at v1. The legitimate operator's enrollment-time response is `[Icp, Est_operator]` — `Icp` dedups (same content, same SAID across submitters); `Est_operator` lands at v=1 with `parent = Icp.said` (extending `Icp` via dedup-equivalence per [../../../../protocol-doctrine.md §Extension Discipline](../../../../protocol-doctrine.md#extension-discipline); operators never extend adversary events).
 
-The operator then submits `Rpr` (governance-authorized via the bound IEL's current `governancePolicy`) extending their `Est_legit` branch. `Rpr` archives `Est_stale` and the chain becomes the operator's. The race is bounded by the user's enrollment window: until enrollment completes (including any `Rpr` cleanup), the user is treated as inactive in the system, and no consumers honor authorizations rooted in the in-progress chain — see [§Application-developer enrollment patterns](#application-developer-enrollment-patterns). The SEL inception batch rule (`[Icp, Est]` minimum) makes this race well-defined: every chain starts with both content and a binding.
+`Est` is privileged at tier 2. The resulting 2-event privileged divergent set fires privileged-divergence-is-terminal at first observation; the chain becomes contested-terminal. Neither the camper nor the operator gets a working chain at the contested `(identity, topic)`. Operator recourse is reincept under a new `(identity, topic)` tuple — no in-protocol `Rpr` resolution.
+
+Camping is mutually destructive: the camper pays tier-2 anchor cost (per contributing policy member) to deny the operator a tuple they can both abandon. Mass camping is economically unprofitable; single-target camping yields nothing structurally usable to the camper. Enrollment patterns bound the targeting surface by keeping new `(identity, topic)` tuples unobservable until the operator's submission lands — see [§Application-developer enrollment patterns](#application-developer-enrollment-patterns).
 
 ```
-Step 1 — Adversary submits [Icp, Est_stale] first; chain born at v_1:
+Step 1 — Adversary submits [Icp, Est_camper] first; chain born at v_1:
 
-  [Icp_v0] → [Est_stale @ v_1, ielEvent=IEL_v_old]   (chain tip)
+  [Icp_v0] → [Est_camper @ v=1, ielEvent=IEL_camper]   (chain tip)
 
-Step 2 — Operator submits [Icp, Est_legit] with Est_legit.previous =
-Icp.said (extending Icp via dedup-equivalence; never extending Est_stale):
+Step 2 — Operator submits [Icp, Est_operator] with Est_operator.previous =
+Icp.said (extending Icp via dedup-equivalence; never extending Est_camper):
 
   Icp dedups (deterministic prefix + SAID across submitters).
-  Est_legit lands at v_1 alongside Est_stale:
+  Est_operator lands at v=1 alongside Est_camper:
 
-  [Icp_v0] ─┬─ [Est_stale @ v_1, ielEvent=IEL_v_old]
-            └─ [Est_legit @ v_1, ielEvent=IEL_v_current]
+  [Icp_v0] ─┬─ [Est_camper   @ v=1, ielEvent=IEL_camper]
+            └─ [Est_operator @ v=1, ielEvent=IEL_operator]
 
-  Both auth-authorized; neither privileged → non-privileged divergent.
+  Both Est events privileged (tier-2). 2-event privileged divergent set →
+  privileged-divergence-is-terminal fires → chain contested-terminal.
 
-Step 3 — Operator submits Rpr extending Est_legit at v_2 (branch-tip-
-extending shape):
+  Effective SAID: hash_effective_said("contested:{prefix}").
 
-  Rpr.previous = Est_legit.said,  Rpr.serial = 2
-
-  Discriminator archives Est_stale's branch:
-
-  [Icp_v0] → [Est_legit @ v_1] → [Rpr @ v_2]   (linear, repaired)
-                                     ↑
-                                     Est_stale archived (forensic;
-                                                         not on live chain)
+Step 3 — Operator recourse: reincept under a new (identity, topic) tuple.
+  No protocol-level resolution at this prefix.
 ```
 
 #### Stale governance termination on unratcheted branches (not blocked)
 
-A party holding stale governance authority can submit a non-archiving privileged event (`Sea` or `Dec`) extending a branch tip whose `ielEvent` is still at the stale event. Mitigation is the governance-evolution Sea ratchet (see [§Governance-evolution ratchet via Sea](#governance-evolution-ratchet-via-sea) below): after IEL evolves governance, submit a `Sea` on each dependent SEL to advance the branch tip's `ielEvent` forward to the current IEL event. After this advancement, a stale-bound `Sea`/`Dec` extending the new tip fails parent-monotonic on its own branch (its `ielEvent` would regress relative to its parent) and is rejected. The vulnerable window is between IEL governance evolution and the SEL Sea ratchet — bounded by gossip latency plus the ratchet's submission cadence.
+A party holding stale governance authority can submit a privileged event (`Sea` or `Dec`) extending a branch tip whose `ielEvent` is still at the stale event. Mitigation is the governance-evolution Sea ratchet (see [§Governance-evolution ratchet via Sea](#governance-evolution-ratchet-via-sea) below): after IEL evolves governance, submit a `Sea` on each dependent SEL to advance the branch tip's `ielEvent` forward to the current IEL event. After this advancement, a stale-bound `Sea`/`Dec` extending the new tip fails parent-monotonic on its own branch (its `ielEvent` would regress relative to its parent) and is rejected. The vulnerable window is between IEL governance evolution and the SEL Sea ratchet — bounded by gossip latency plus the ratchet's submission cadence.
 
 ```
 IEL evolves governance:
@@ -299,9 +295,9 @@ Same adversary tries again:
 
 #### Fork-contest with low ielEvent (not blocked)
 
-A non-archiving privileged event (`Sea` or `Dec`) that forks from `v_{d-1}` (forming its own singleton branch at `v_d`) need only satisfy `event.ielEvent >= v_{d-1}.ielEvent`. It does not need to satisfy any constraint relative to the existing diverged branches — those are structurally independent branches.
+A privileged event (`Sea` or `Dec`) that forks from `v_{d-1}` (forming its own singleton branch at `v_d`) need only satisfy `event.ielEvent >= v_{d-1}.ielEvent`. It does not need to satisfy any constraint relative to the existing diverged branches — those are structurally independent branches.
 
-This is intentional. Chain-wide watermark would otherwise reject fork-contest scenarios where a long divergent branch already sits at higher SEL serials with lower `ielEvent`s than the contesting submission's binding. The per-branch framing is what makes fork-contest work — the structural admission of a non-archiving privileged event extending `v_{d-1}` is independent of the diverged branches' bindings, so the upgrade rule (priv event joining a non-privileged divergent set at `v_d` → Contested) fires uniformly even when the live branches are stale.
+This is intentional. Chain-wide watermark would otherwise reject fork-contest scenarios where a long divergent branch already sits at higher SEL serials with lower `ielEvent`s than the contesting submission's binding. The per-branch framing is what makes fork-contest work — the structural admission of a privileged event extending `v_{d-1}` is independent of the diverged branches' bindings, so the upgrade rule (priv event joining a non-privileged divergent set at `v_d` → Contested) fires uniformly even when the live branches are stale.
 
 ```
 Pre-state (existing non-priv divergent at v_d with high SEL serials but
@@ -312,7 +308,7 @@ low ielEvent on the diverged branches):
                                                     (both bound to IEL_v3)
 
 Operator (with current governance, bound to IEL_v5) submits a non-
-archiving privileged event (Sea or Dec) extending v_{d-1} as a singleton
+privileged event (Sea or Dec) extending v_{d-1} as a singleton
 branch at v_d:
 
   evt.previous = v_{d-1}.said      (parent is divergence ancestor)
@@ -410,7 +406,7 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 **Notable simplifications vs. SEL:**
 - No `Rpr` kind, no `truncate_and_replace` discriminator algorithm, no archive tables, no repair-link rows.
 - IelVerifier still tracks branches (max 2 per the divergence invariant) but never reconciles — divergent stays divergent until the chain is reincepted under a new prefix.
-- `MAX_NON_EVALUATION_EVENTS` proactive bound doesn't apply (every IEL event is governance-authorized; no fork window to bound).
+- The SEL seal-advance cap has no IEL analog (every IEL event is governance-authorized; no fork window to bound).
 
 **Tests:** Submit / verifier / builder coverage; gossip-race convergence on contested state.
 

@@ -10,7 +10,7 @@ All cases below depend on these invariants:
 
 1. **Every IEL event is governance-authorized**: `Icp` is self-endorsed under its declared `governancePolicy`; `Evl`, `Dec` all require the branch's tracked `governancePolicy` satisfaction. There are no auth-only events on IEL. This eliminates the auth-vs-governance asymmetry that SEL needs Rpr to handle.
 
-2. **No proactive-evaluation bound needed**: every non-terminal post-Icp IEL event advances the seal (`Evl`), and only one Icp lands per chain. There is no "non-evaluation event run" for a bound to cap — the SEL `MAX_NON_EVALUATION_EVENTS` cap has no IEL analog.
+2. **No seal-advance cap needed**: every non-terminal post-Icp IEL event advances the seal (`Evl`), and only one Icp lands per chain. There is no "non-seal-advancing event run" for a cap to bound — the SEL seal-advance cap has no IEL analog.
 
 3. **No archival**: history is encoded in the data, including divergent branches, forever. There is no `truncate_and_replace`, no `Rpr`, no archive table.
 

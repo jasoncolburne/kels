@@ -31,7 +31,7 @@ Server errors map to:
 | `Ok({applied: true, ...})` | Batch accepted | linear / divergent / contested / decommissioned per batch contents |
 | `ParentLocked { reason }` | Normal-event at-or-before `lastSealAdvancingEvent` in chain order (write-authorized but seal advanced past submitter's view) | unchanged |
 | `RepairRequired` | Non-Rpr submission to a divergent chain | unchanged |
-| `ContestedSel` | Submission to a Contested chain (divergent set containing a non-archiving privileged event) | terminal, unchanged |
+| `ContestedSel` | Submission to a Contested chain (divergent set containing a privileged event) | terminal, unchanged |
 | `DecommissionedSel` | Submission to a chain with a `Dec` event in it. Decommissioned is fully terminal; the seal-cap rejects every submission whose parent sits at-or-before `v_{d-1}`. | terminal |
 | `IncompleteInception` | Verifier walked a chain whose tip is `Icp` (no v1 `Est`) | unchanged (rejected) |
 | `BadIdentityBinding(reason)` | `ielEvent` does not resolve to a real IEL event with matching prefix, or fails per-event parent-monotonic check | unchanged |
@@ -140,7 +140,7 @@ elif normal-event
                                     → reject ParentLocked (algorithmic trigger)
 elif event creates a fork (overlap):
                                     → insert single forking event; if the divergent
-                                      set contains a non-archiving privileged event
+                                      set contains a privileged event
                                       (Sea or Dec), chain transitions to Contested
 else:
                                     → normal append
@@ -227,7 +227,7 @@ Propagating a divergent SEL to a remote node requires more than canonical chain 
 
 1. Trace forward from each fork event to partition post-divergence events into `chain_a` and `chain_b`.
 2. Send **pre-divergence + non-privileged chain** as paged appends; each page lands as a non-divergent extension.
-3. Send **contesting chain** (ending in the non-archiving privileged event — `Sea` or `Dec` — that triggered the contested transition) as an atomic single-page batch; lands at the receiver as a divergent extension at `v_d`, triggering privileged-divergence-is-terminal.
+3. Send **contesting chain** (ending in the privileged event — `Sea` or `Dec` — that triggered the contested transition) as an atomic single-page batch; lands at the receiver as a divergent extension at `v_d`, triggering privileged-divergence-is-terminal.
 
 For unrecovered divergence (no terminal in either branch — possible on SEL during the gossip-propagation window before resolution), the longer chain is sent as paged appends, then the fork event from the shorter chain establishes divergence at the receiver.
 
@@ -237,7 +237,7 @@ For unrecovered divergence (no terminal in either branch — possible on SEL dur
 
 1. **Events are sorted deterministically** — by `(serial, kind_priority, said)`. SAID tiebreaker has no semantic meaning but ensures identical ordering across all nodes.
 2. **Only one divergent event added** — when divergence is detected, only the first conflicting event is stored.
-3. **Governance-evaluation events are bounded** — proactive evaluation (`MAX_NON_EVALUATION_EVENTS = 63`) caps non-evaluation runs; the next event after 63 must be `Sea`/`Rpr`/`Dec`.
+3. **Seal-advance cap** — the seal-advance cap (`MINIMUM_PAGE_SIZE − 2 = 62`) caps non-seal-advancing runs; the next event after 62 must be a seal-advancing kind (`Est` at v=1, then `Sea` or `Rpr`; `Dec` enforces but does not advance).
 4. **Repair cannot truncate at or before the evaluation seal** — `truncate_and_replace` rejects fork-points at-or-before `lastSealAdvancingEvent` in chain order. A competing `Rpr` arriving against an existing seal-defining `Rpr` is rejected by the seal-cap (locked-portion bound); federation-level convergence for that race is handled at the infrastructure layer.
 5. **Contested and Decommissioned are both fully terminal** — no submission of any kind is accepted. The seal-cap rejects every submission whose parent sits at-or-before the terminal's parent. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
 6. **Authorization is consumer-side** — the server does NOT verify anchor signatures on submit. Consumers verify the anchoring model when they use the data.

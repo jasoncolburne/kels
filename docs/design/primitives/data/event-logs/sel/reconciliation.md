@@ -12,11 +12,11 @@ All cases below depend on these invariants:
 
 2. **Inception is permissionless but bounded by batch rule**: SEL Icp prefix derives deterministically from `(identity, topic)`. Anyone can submit `[Icp]` content-wise, but the verifier rejects any chain whose tip is still `Icp` (`IncompleteInception` from `SelVerifier::finish_internal`). Every chain is born with both content and a binding.
 
-3. **Proactive-evaluation compliance**: Every SEL has an evaluation event (`Sea` / `Rpr` / `Dec`) at least every `MAX_NON_EVALUATION_EVENTS = 63` non-evaluation events. Surfaced by `SelVerifier` and enforced by the submit handler; the builder auto-inserts `Sea` when the bound is about to be crossed.
+3. **Seal-advance cap compliance**: Every SEL has a seal-advancing event (`Est` at v=1; `Sea` or `Rpr` thereafter) at least every `MINIMUM_PAGE_SIZE − 2 = 62` non-seal-advancing events. Surfaced by `SelVerifier` and enforced by the submit handler; the builder auto-inserts `Sea` when the cap is about to be crossed.
 
-4. **Bounded divergence**: An adversary can only fork after the last evaluation event. Combined with invariant 3, divergence spans at most 63 events from the fork point. An adversary without `governancePolicy` (via the bound IEL's tracked governance) can only submit `Upd`, and proactive-evaluation enforcement limits them to at most 63 events before rejection.
+4. **Bounded divergence**: An adversary can only fork after the last seal-advancing event. Combined with invariant 3, divergence spans at most 62 events from the fork point. An adversary without `governancePolicy` (via the bound IEL's tracked governance) can only submit `Upd`, and seal-advance-cap enforcement limits them to at most 62 events before rejection.
 
-5. **Bounded operations**: Repair batch (`pending + Rpr`) ≤ 64, decommission batch (`pending + Dec`) ≤ 64, adversary chain to archive ≤ 63. All fit in one page (`MINIMUM_PAGE_SIZE = 64`).
+5. **Bounded operations**: Repair batch (`pending + Rpr + Sea`) ≤ 64, decommission batch (`pending + Dec`) ≤ 64, adversary chain to archive ≤ 62. All fit in one `MINIMUM_PAGE_SIZE`-bounded page. The 2-slot headroom (relative to `MINIMUM_PAGE_SIZE`) accommodates the worst-case `[Rpr, Sea]` atomic repair-and-resealing batch.
 
 6. **Policy immunity** (lives on IEL): every IEL-tracked policy is immune. Each referenced policy stays resolvable for the chain's lifetime — past authorizations stay distinguishable from authorization failures. See [../iel/event-log.md §Evaluation Seal and Policy Immunity](../iel/event-log.md#evaluation-seal-and-policy-immunity).
 
@@ -35,7 +35,7 @@ These invariants are what make synchronous archival, single-page discriminator w
 | **Divergent** | Fork detected, no `Rpr`/`Dec` yet. |
 | **Divergent, sealed** | Sub-state of Divergent where the seal has advanced past the divergence point — typically via a `Rpr` or `Sea` that landed before resolution. Submitter's only legitimate response is `Dec`, or accept the new state. |
 | **Repaired** | Clean chain after `Rpr` archived adversary events. |
-| **Contested** | Divergent set contains a non-archiving privileged event (`Sea` or `Dec`); no event of any kind lands. |
+| **Contested** | Divergent set contains a privileged event (`Est` at v=1, `Sea`, or `Dec`); no event of any kind lands. |
 | **Decommissioned** | `Dec` present on a linear chain. Fully terminal: all submissions rejected by the seal-cap. |
 
 ## Local Submissions Matrix
@@ -45,7 +45,7 @@ What happens when a client submits events to the submit handler on a single node
 | SEL State | Upd | Sea | Rpr / pending+Rpr | Dec |
 |-----------|-----|-----|-------------------|-----|
 | **Empty** (no Icp) | Reject (no chain) | Reject | Reject | Reject |
-| **Empty** (`[Icp, Est]` minimum) | Append ✓ if `ielEvent` binding + anchor satisfy IEL authPolicy; else `BadIdentityBinding` | n/a | n/a | n/a |
+| **Empty** (`[Icp, Est]` minimum) | Append ✓ if `ielEvent` binding + anchor satisfy IEL authPolicy; else `BadIdentityBinding`. Two concurrent `[Icp, Est]` batches with different `Est` SAIDs (camping race) → 2-event privileged divergent set at v=1; chain contested-terminal at first observation. | n/a | n/a | n/a |
 | **Active** | Append ✓ (authPolicy via IEL) | Append ✓; if creates overlap → Contested | Repair ✓ (clean: no-op archival; adversary extension: archives adversary chain) | Append ✓ → Decommissioned (linear) or Contested (creates divergence at `v_d`) |
 | **Active, sealed** (`Upd`/`Sea` at-or-before `lastSealAdvancingEvent` in chain order) | `ParentLocked` | `ParentLocked` (the seal-cap rejects any extension of `v_{seal-1}`) | `ParentLocked` (the seal-cap rejects any extension of `v_{seal-1}`) | `ParentLocked` (the seal-cap rejects any extension of `v_{seal-1}`) |
 | **Divergent** | `RepairRequired` | `RepairRequired` (linear); extending `v_{d-1}` → Contested via upgrade rule | Discriminator-driven repair ✓ | `RepairRequired` (linear); extending `v_{d-1}` → Contested via upgrade rule |
@@ -61,8 +61,8 @@ Additional rejection cases that don't fit per-state cells:
 
 ### Notes on cell routing
 
-- **Contested-state transition on an Active (non-sealed) chain** — A non-archiving privileged event (`Sea` or `Dec`) with `previous = v_{d-1}.said` creates a 2-event divergent set at `v_d` (the new event + the existing non-privileged event at `v_d`); privileged-divergence-is-terminal fires. On `Active, sealed`, the seal-cap rejects this construction (parent in locked portion). See [event-log.md §Contested-state transitions](event-log.md#contested-state-transitions).
-- **Contested-state transition (divergent chain)** — A non-archiving privileged event with `previous = v_{d-1}.said` joins the divergent set as a third event via the upgrade rule.
+- **Contested-state transition on an Active (non-sealed) chain** — A privileged event (`Sea` or `Dec`) with `previous = v_{d-1}.said` creates a 2-event divergent set at `v_d` (the new event + the existing non-privileged event at `v_d`); privileged-divergence-is-terminal fires. On `Active, sealed`, the seal-cap rejects this construction (parent in locked portion). See [event-log.md §Contested-state transitions](event-log.md#contested-state-transitions).
+- **Contested-state transition (divergent chain)** — A privileged event with `previous = v_{d-1}.said` joins the divergent set as a third event via the upgrade rule.
 - **`Sea` / `Upd` `ParentLocked` on Active, sealed** — non-terminal, non-`Rpr` event at-or-before `lastSealAdvancingEvent` would re-evaluate the seal; the submitter must accept the new state, decommission via `Dec`, or abandon. See [merge.md §`ParentLocked` algorithmic trigger](merge.md#ParentLocked-algorithmic-trigger).
 - **Active, sealed and Divergent (sealed) — all kinds extending `v_{seal-1}` / `v_{d-1}`** — the seal-cap rejects every submission whose parent sits in the locked portion. When the rejected submission originated from another federation peer's locally-landed priv event (concurrent priv-vs-priv race — `Sea-vs-Sea`, `Sea-vs-Dec`, `Rpr-vs-Rpr`, `Rpr-vs-Sea`, etc.), the chain does not structurally converge with that peer; federation-level convergence resolves at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)). The per-race-shape enumeration is in [§Race matrix](#race-matrix) below.
 - **Decommissioned** — fully terminal. All submissions return `DecommissionedSel`. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [#205](https://github.com/jasoncolburne/kels/issues/205) and [§Race matrix](#race-matrix) below).
@@ -81,7 +81,7 @@ There is no standalone `[Icp]` batch (Icp alone is rejected). `Est` is structura
 
 When chain state transitions, the submit handler publishes the new effective SAID to Redis (`sel_updates`). The gossip service broadcasts an announcement on the `kels/gossip/v1/topics/sel` topic; peers compare their local effective SAID against the announcement and fetch the full chain from origin if stale. The receiving handler routes via the same kind-discriminator (`is_repair` / `is_contest` / `is_decommission`) used for direct submissions.
 
-For linear chains the source sends a single full-chain stream that the sink applies as a normal append. For divergent chains the source uses `send_divergent_sel_events` (`lib/kels/src/types/sad/sync.rs`) to partition the chain into sub-batches the sink will accept under its routing rules: pre-divergence + non-privileged chain as paged appends, then the contesting chain (ending in the non-archiving privileged event — `Sea` or `Dec` — that triggered the transition) as an atomic single-page batch. See [merge.md §Gossip Send-Side Partitioning](merge.md#gossip-send-side-partitioning-divergent-sels). Sender-side composition is the cryptographic-soundness gate; the sink's routing rules are the constraint the sender designs around, not a safety net.
+For linear chains the source sends a single full-chain stream that the sink applies as a normal append. For divergent chains the source uses `send_divergent_sel_events` (`lib/kels/src/types/sad/sync.rs`) to partition the chain into sub-batches the sink will accept under its routing rules: pre-divergence + non-privileged chain as paged appends, then the contesting chain (ending in the privileged event — `Sea` or `Dec` — that triggered the transition) as an atomic single-page batch. See [merge.md §Gossip Send-Side Partitioning](merge.md#gossip-send-side-partitioning-divergent-sels). Sender-side composition is the cryptographic-soundness gate; the sink's routing rules are the constraint the sender designs around, not a safety net.
 
 ### Source → Sink state matrix
 
@@ -142,7 +142,7 @@ The single-page-fetch + resume-verifier trust gate + in-memory walkback shape mi
 
 | Metric | Bound | Source |
 |--------|-------|--------|
-| Adversary events to archive | ≤ 63 | Proactive-evaluation seal limits fork distance |
+| Adversary events to archive | ≤ 62 | Seal-advance cap limits fork distance |
 | Archival scope | Single transaction | Synchronous in submit handler, bounded by `MINIMUM_PAGE_SIZE` |
 | Owner events never archived | ✓ | Owner chain identified by walk-back from `Rpr.previous` |
 
@@ -264,7 +264,7 @@ All nodes converge on the same effective SAID (tip event SAID).
 
 ### 5. Contested chains across nodes
 
-Different nodes may have different event counts for a contested SEL (e.g., one node had a `Sea` upgrade a non-priv divergent set via the upgrade rule; another saw a 2-event privileged divergent set directly). Their event counts may differ, but `compute_prefix_effective_said` returns a deterministic `hash_effective_said("contested:{prefix}")` for any chain with a non-archiving privileged event in its divergent set. Anti-entropy sees matching SAIDs and does not re-queue.
+Different nodes may have different event counts for a contested SEL (e.g., one node had a `Sea` upgrade a non-priv divergent set via the upgrade rule; another saw a 2-event privileged divergent set directly). Their event counts may differ, but `compute_prefix_effective_said` returns a deterministic `hash_effective_said("contested:{prefix}")` for any chain with a privileged event in its divergent set. Anti-entropy sees matching SAIDs and does not re-queue.
 
 ```
 Different event sets across nodes, same effective SAID:
@@ -291,47 +291,38 @@ Anti-entropy compares SAIDs, sees they match, does not re-queue
 synchronization. Both nodes' chains stay as forensic record.
 ```
 
-### 6. Adversary races inception with stale identity binding
+### 6. Adversary races inception — mutual destruction at v=1
 
-> **Operator never extends `Est_stale`.** Extending an adversary event would be a structural attestation that the predecessor is acceptable — equivalent to endorsing the adversary's content. The operator extends `Icp` (which is attested-shared via dedup-equivalence), not the adversary's `Est`. See [../../../../protocol-doctrine.md §Extension Discipline](../../../../protocol-doctrine.md#extension-discipline).
+`Est` is privileged at tier 2. An `Est`-`Est` divergent set at v=1 fires privileged-divergence-is-terminal at first observation; the chain becomes contested-terminal. Neither the adversary nor the operator gets a working chain at the contested `(identity, topic)`. Operator recourse against a successful camp is reincept under a new `(identity, topic)` tuple.
 
-Adversary submits `[Icp, Est_stale]` — Icp is permissionless (dedup-idempotent across submitters), Est_stale binds to an old IEL event where the adversary still had auth. The chain is born with adversary's content at v_1. Operator submits `[Icp, Est_legit]` where `Est_legit.previous = Icp.said` (extending `Icp` via dedup-equivalence). `Icp` dedups; `Est_legit` lands at `v_1` alongside `Est_stale`, creating a non-privileged divergent set (both auth-authorized; Est-Est race shape). Operator submits `Rpr` (governance-authorized via the bound IEL's current `governancePolicy`) extending the `Est_legit` branch; the discriminator archives `Est_stale`. Chain becomes the operator's; `Est_stale` moves to the archive table (forensic-readable; not live).
+Adversary submits `[Icp, Est_camper]` — Icp is permissionless (dedup-idempotent across submitters), `Est_camper` carries the camper's `ielEvent` binding. The chain is born with camper's content at v=1. Operator submits `[Icp, Est_operator]` with `Est_operator.previous = Icp.said` (extending `Icp` directly via dedup-equivalence; the operator never extends `Est_camper` per [../../../../protocol-doctrine.md §Extension Discipline](../../../../protocol-doctrine.md#extension-discipline)). `Icp` dedups; `Est_operator` lands at v=1 alongside `Est_camper`. The resulting 2-event privileged divergent set fires privileged-divergence-is-terminal: the chain becomes contested-terminal.
 
 ```
-Step 1 — Adversary submits [Icp, Est_stale] first; chain born at v_1
-with adversary's content:
+Step 1 — Adversary submits [Icp, Est_camper] first:
 
-  [Icp_v0] → [Est_stale @ v_1, ielEvent=IEL_v_old]   (chain tip)
+  [Icp_v0] → [Est_camper @ v=1, ielEvent=IEL_camper]   (chain tip)
 
-Step 2 — Operator submits [Icp, Est_legit] with Est_legit.previous =
-Icp.said (extending Icp directly, NOT Est_stale):
+Step 2 — Operator submits [Icp, Est_operator] with Est_operator.previous =
+Icp.said (extending Icp directly, NOT Est_camper):
 
   Icp dedups (same content, same SAID across submitters; no second Icp
   record created).
-  Est_legit lands at v_1 alongside Est_stale, creating non-priv divergent
-  set:
+  Est_operator lands at v=1 alongside Est_camper:
 
-  [Icp_v0] ─┬─ [Est_stale @ v_1, ielEvent=IEL_v_old]
-            └─ [Est_legit @ v_1, ielEvent=IEL_v_current]
+  [Icp_v0] ─┬─ [Est_camper   @ v=1, ielEvent=IEL_camper]
+            └─ [Est_operator @ v=1, ielEvent=IEL_operator]
 
-  Both auth-authorized; neither privileged → non-privileged divergent.
+  Both Est events are privileged (tier-2 anchored, governance-authorized
+  at v=1 via the bound IEL's authPolicy). The 2-event privileged
+  divergent set fires privileged-divergence-is-terminal.
 
-Step 3 — Operator submits Rpr (branch-tip-extending shape, extending
-Est_legit at v_2):
+  Effective SAID: hash_effective_said("contested:{prefix}").
 
-  Rpr.previous = Est_legit.said
-  Rpr.serial  = 2
-
-  Discriminator's walkback from Rpr.previous reaches Est_legit at v_1;
-  Est_stale's branch is archived.
-
-  [Icp_v0] → [Est_legit @ v_1] → [Rpr @ v_2]   (linear, repaired)
-                                       ↑
-                                       Est_stale moved to sad_event_archives
-                                       (forensic; not on live chain)
+Step 3 — Operator recourse: reincept under a new (identity, topic) tuple.
+  No protocol-level path resolves the contested chain at this prefix.
 ```
 
-The operator's response **never extends `Est_stale`** — extending an adversary event would be a structural attestation that the predecessor is acceptable, equivalent to endorsing the adversary's content. See [../../../../protocol-doctrine.md §Extension Discipline](../../../../protocol-doctrine.md#extension-discipline).
+Camping defense rests on mutual destruction making the attack unprofitable: the camper pays tier-2 anchor cost (per contributing policy member) to deny the operator a tuple they can both abandon — a tit-for-tat outcome that yields the camper nothing structurally usable. Operator-side mitigations (well-designed bound IEL policy with high thresholds + custody separation; PII hygiene on public SADs; use exchange/custody for private data) bound the targeting surface. See [events.md §Camping defense](events.md#camping-defense-icp-permissionless--est-tier-2--inception-batch-required--est-est-mutual-destruction).
 
 ### 7. IEL evolves, SEL branch tip ratchets via Sea
 
@@ -404,7 +395,7 @@ Dependent SEL trying to extend:
 
 ### 9. Concurrent Dec + Sea/Dec at v_d — federation race, infrastructure-layer convergence
 
-Two governance-authorized parties submit concurrent privileged events extending `v_{d-1}` at the same serial `d` to different nodes: party 1 submits `Dec`; party 2 submits a non-archiving privileged event (`Sea` or `Dec`) extending the same parent. Each lands as a linear-chain extension on its submitting node and advances the local seal. Gossip then delivers each event to the other node, but the seal-cap rejects each — under universal locking, no admission at a sealed serial:
+Two governance-authorized parties submit concurrent privileged events extending `v_{d-1}` at the same serial `d` to different nodes: party 1 submits `Dec`; party 2 submits a privileged event (`Sea` or `Dec`) extending the same parent. Each lands as a linear-chain extension on its submitting node and advances the local seal. Gossip then delivers each event to the other node, but the seal-cap rejects each — under universal locking, no admission at a sealed serial:
 
 ```
 Pre-state (linear at v_{d-1}):
@@ -450,8 +441,11 @@ Enumeration of concurrent priv-vs-priv races between federation peers, both subm
 | Sea-vs-Sea | Active-sealed (Sea at `v_d`) | `ParentLocked`; non-converging; #205 |
 | Sea-vs-Dec | Active-sealed / Decommissioned | `ParentLocked` / `DecommissionedSel`; non-converging; #205 |
 | Dec-vs-Dec | Decommissioned | `DecommissionedSel`; non-converging; #205 |
+| Est-vs-Est (v=1) | Contested-terminal at first observation (both events privileged) | Mutual destruction: chain contested-terminal on every node. Effective SAID converges to `hash("contested:{prefix}")` — distinct from the priv-vs-priv non-convergence above. Operator recourse: reincept under a new `(identity, topic)`. |
 
 The matrix is symmetric in race participants — `Rpr-vs-Sea` covers both `Rpr` arriving at a node with `Sea` and `Sea` arriving at a node with `Rpr`. The receiving-node-state column reflects what the local chain looks like after the local first-receive has landed; the outcome describes the gossip-arriving event's rejection.
+
+`Est`-vs-`Est` at v=1 is structurally distinct from the other rows: the seal hasn't advanced past v=1 on either node when the second Est arrives, so the seal-cap doesn't reject — both events land in a 2-event privileged divergent set, and privileged-divergence-is-terminal fires. The federation converges on contested-terminal at the protocol layer (matching effective SAID), unlike the post-seal race rows where each node keeps its locally-landed first-receive and federation-level convergence requires #205.
 
 ## References
 
