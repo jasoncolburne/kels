@@ -64,7 +64,7 @@ s0 divergence is rejected outright — inception is fully deterministic; two dis
 
 The divergence invariant — combined with the proactive-ROR rule (`MAX_NON_REVEALING_EVENTS = MINIMUM_PAGE_SIZE - 2 = 62`) — guarantees:
 - **Non-privileged divergent set** at serial `d` (events kinds limited to `Rot`/`Ixn`): max 2 events. Recoverable via `Rec`.
-- **Privileged divergent set** at serial `d` (at least one event is recovery-revealing): max 3 events (2 non-privileged that arrived first + 1 privileged that landed via the upgrade rule and triggered the contested transition; OR 2 events at least one of which is privileged from the start). Contested-terminal.
+- **Privileged divergent set** at serial `d` (exactly one event is a non-archiving recovery-revealing kind — `Ror` or `Dec`; universal locking blocks a second priv from joining via the seal-cap): max 3 events (2 non-privileged that arrived first + 1 priv that landed via the upgrade rule and triggered the contested transition; OR 2 events exactly one of which is a non-archiving priv from the start, the other non-privileged). Contested-terminal.
 - At most 62 events total on a non-privileged divergent set's branches beyond `d` (proactive ROR caps non-revealing forks; a holder without the recovery key cannot submit a recovery-revealing event to extend further).
 - The combined post-`d` window fits in one `MINIMUM_PAGE_SIZE`-bounded page.
 

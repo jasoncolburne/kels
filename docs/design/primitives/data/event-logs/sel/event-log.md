@@ -106,9 +106,9 @@ delivered events.
 
 The divergence invariant guarantees:
 - **Non-privileged divergent set** at serial `d` (event kinds limited to `Upd` at v ≥ 2, or `Est` at v = 1): max 2 events. Recoverable via `Rpr`.
-- **Privileged divergent set** at serial `d` (at least one event is a non-archiving privileged kind — `Sea` or `Dec`):
+- **Privileged divergent set** at serial `d` (exactly one event is a non-archiving privileged kind — `Sea` or `Dec`; universal locking blocks a second priv from joining via the seal-cap):
   - **3-event variant** — 2 non-privileged arrived first (concurrent `Upd` extension); the 3rd non-archiving privileged event landed via the upgrade rule and triggered the contested transition.
-  - **2-event variant** — at least one of the two events was a non-archiving privileged kind from the start.
+  - **2-event variant** — exactly one of the two events is a non-archiving privileged kind from the start; the other is non-privileged.
   - Both: contested-terminal.
 - The post-`d` window for non-privileged divergence is bounded by the proactive evaluation rule (one page).
 - Every event's parent sits at-or-after the chain's last evaluation seal (`parent_serial >= seal_serial`; see [../../../../protocol-doctrine.md §Forks are Seal-Bounded](../../../../protocol-doctrine.md#forks-are-seal-bounded)). The seal-cap keeps fork-creation in the post-seal window where the parent's auth context is current. Combined with per-event parent-monotonic on `ielEvent` (each event's `ielEvent` must be at-or-after its parent's), this prevents stale-IEL-policy holders from extending an existing branch with a regressed `ielEvent`. Once a seal-advancing event lands at `v_d` on a chain, any subsequent submission whose parent sits at-or-before `v_{d-1}` is rejected by the seal-cap.

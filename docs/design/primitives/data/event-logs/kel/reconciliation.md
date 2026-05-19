@@ -237,7 +237,7 @@ All nodes converge on the same effective SAID (tip event SAID).
 
 ### 5. Contested KELs across nodes
 
-Different nodes may have different event sets for a contested KEL (e.g., one node archived the non-surviving events via recovery before the contested-transition arrived; another received the contesting event first). Their event counts may differ, but `compute_prefix_effective_said` returns a deterministic `hash_effective_said("contested:{prefix}")` for any KEL where the divergent set contains a non-archiving privileged event. Anti-entropy sees matching SAIDs and does not re-queue.
+Different nodes may have different event sets for a contested KEL when they observed different subsets of concurrent submissions before the contested-state gate closed (e.g., one node received both `ixn_a` and `ixn_b` before `ror_c` upgraded the set to contested; another received only `ixn_b` before `ror_c` landed, and `ixn_a`'s gossip arrived after the gate closed). Their event counts differ, but `compute_prefix_effective_said` returns a deterministic `hash_effective_said("contested:{prefix}")` for any KEL where the divergent set contains a non-archiving privileged event. Anti-entropy sees matching SAIDs and does not re-queue.
 
 ```
 Different event sets, same effective SAID:
