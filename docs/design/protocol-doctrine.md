@@ -254,6 +254,21 @@ This is a deliberate trade-off. The seal-cap and locked-portion bound prevent st
 
 If an adversary compromises all three key tiers on a KEL (signing + rotation + recovery), or compromises threshold-many full-tier KELs on an IEL governance policy, the chain is structurally owned by the adversary and the protocol provides no recovery primitive. Defense lives in policy composition — IEL governance policies should require threshold-many distinct custody domains, so full compromise of any one domain leaves the policy threshold intact. See [§Limit of the Doctrine](#limit-of-the-doctrine) for the broader treatment of current-state compromise.
 
+##### Pre-divergence verifiability survives contestation
+
+A contested chain preserves the structural verifiability of every event that landed before the divergence point. The seal-cap and locked-portion bound prevent any event — on any branch, at any future point — from rearranging or invalidating events at serials below the divergence's parent. The pre-divergence portion is permanently final.
+
+This means a contested chain remains useful as a verification surface for everything that came before:
+
+- **Anchors that landed pre-divergence** stay anchored. A KEL `Ixn` that anchored an IEL event before the IEL diverged stays a valid attestation.
+- **Credentials issued pre-divergence** remain verifiable. An issuance pinned to a pre-divergence IEL event via `issuerIelEvent` can still be checked against the IEL state at that event — the chain segment used for verification is structurally immutable.
+- **SELs bound to a pre-divergence `ielEvent`** stay trust-evaluable for their bound IEL state. The `IelDivergent` rule (per [primitives/data/event-logs/sel/events.md](primitives/data/event-logs/sel/events.md)) enforces this by accepting only bindings where `bound_event.serial < first_divergent_serial`.
+- **Audit and forensic queries** on a contested chain produce truthful, structurally-grounded answers about historical state.
+
+This is the consumer-side complement of [§Compromise is Permanent](#compromise-is-permanent). The "past authority cannot act" rule + the locked-portion bound together mean: once a chain segment sits below the seal, it is final — for the chain itself (no further events target it) AND for consumers (they can verify against it indefinitely).
+
+The verifier signals this via `policy_satisfied`: queries against SAIDs anchored pre-divergence return `policy_satisfied = true` even on contested chains; queries against post-divergence SAIDs return `policy_satisfied = false`. The boundary is the divergence point, not the contested state.
+
 #### One Divergent Generation at a Time
 
 The protocol bounds divergence to **one unresolved generation at a time** on any given chain. Within a generation, the divergent set at `v_d` carries 2 events when all non-privileged (recoverable via `Rec` on KEL / `Rpr` on SEL) or 3 events when the upgrade rule has added a non-archiving privileged event (transition to contested-terminal; the 3rd event is the upgrade event). Beyond `v_d`, the divergence invariant caps each branch at 1 event per serial (the post-divergence linear-extension cap, applied per branch).
