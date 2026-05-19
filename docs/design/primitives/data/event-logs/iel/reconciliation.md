@@ -171,7 +171,10 @@ SEL chain bound to the IEL (last good binding pre-divergence):
     [Upd_v_new, ielEvent=Evl_{d-1}.said]   ← bound at v_{d-1} < d
 
   IEL resolver: "bound event is in pre-divergence shared prefix" → OK
-   for chain-validity; consumer trust degraded per whole-chain-suspect rule.
+   for chain-validity, and consumer trust remains intact for the
+   pre-divergence binding per protocol-doctrine.md §Pre-divergence
+   verifiability survives contestation. Forward extension that would bind
+   to a post-divergence IEL event is what's blocked.
 ```
 
 Bindings at serials strictly less than `first_divergent_serial` resolve cleanly (pre-divergence portion is unambiguous). Bindings at-or-after the divergent serial are rejected as `IelDivergent`. SEL operator's recovery path: contest the SEL or migrate to a different IEL.

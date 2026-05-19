@@ -97,7 +97,7 @@ A controller of a KEL identity has three keys to protect. Clients should be depl
 - **Impact:** Total identity compromise. Both parties hold the same authorities.
 - **Outcome:** No in-band recourse remains. Either party can submit any recovery-revealing event; the adversary's events satisfy the same dual-sig check as the operator's. Concurrent submissions race into a privileged divergent set → privileged-divergence-is-terminal fires → chain transitions to Contested. The chain mathematics cannot adjudicate which party is legitimate; the chain ends.
 - **Recourse:** Reincept the KEL prefix under a fresh key set. Dependent chains rebind to the new prefix (out-of-band coordination at the IEL governance layer for chains that anchor to this KEL: an `Evl` on the dependent IEL rotates the contested KEL out of `governancePolicy`).
-- **Detection:** The verifier walk identifies the contested state; consumer trust degrades per the whole-chain-suspect rule. See [../design/protocol-doctrine.md §Trust Model on Contested Chains](../design/protocol-doctrine.md#trust-model-on-contested-chains).
+- **Detection:** The verifier walk identifies the contested state; consumer trust on post-divergence events degrades to submitter-indistinguishable, while pre-divergence events retain structural verifiability. See [../design/protocol-doctrine.md §Trust Model on Contested Chains](../design/protocol-doctrine.md#trust-model-on-contested-chains) and [§Pre-divergence verifiability survives contestation](../design/protocol-doctrine.md#pre-divergence-verifiability-survives-contestation).
 
 **Recovery key compromised (without rotation key):**
 - **Impact:** Recovery key alone is useless — all recovery-revealing events (`rec`/`ror`/`dec`) require dual signatures (rotation + recovery). No action possible without both keys.
@@ -268,20 +268,20 @@ SELs are identity-rooted — every SEL binds at inception to an IEL prefix and r
 
 ## Cross-Primitive Cascade
 
-KELS primitives chain authority: KELs anchor IEL governance acts; IELs root SEL authorization. When one chain becomes contested, dependent chains lose their authorization basis.
+KELS primitives chain authority: KELs anchor IEL governance acts; IELs root SEL authorization. When one chain becomes contested, dependent chains whose bindings reach pre-divergence chain state stay authorized; only forward extensions that would bind against the contested chain face the freeze. See [../design/protocol-doctrine.md §Pre-divergence verifiability survives contestation](../design/protocol-doctrine.md#pre-divergence-verifiability-survives-contestation).
 
 ### KEL Contested Cascade
 
 **Scenario:** A KEL is contested (compromise detected; a non-archiving privileged event in a divergent set fires privileged-divergence-is-terminal).
-- **Cascade effect:** IEL events anchored under that KEL lose authorization grounding (their anchors traced through a now-suspect KEL). Dependent SELs bound to those IEL events lose authorization basis. The whole-chain-suspect rule applies recursively.
-- **Operator response:** Cascade-reincept under new prefixes. The contested KEL is forensic-readable but cannot ground new trust decisions. The dependent IEL's `Evl` rotates the contested KEL out of `governancePolicy`; if redundancy is insufficient, the dependent IEL must reincept against a different anchoring KEL, and the dependent SELs must reincept against the new IEL.
+- **Cascade effect:** IEL events anchored by the contested KEL pre-its-divergence retain authorization grounding — those anchors sit on the contested KEL's structurally-final pre-divergence segment. Post-divergence anchors are submitter-indistinguishable; the contested KEL is also frozen and cannot produce fresh anchors going forward. Whether dependent IEL/SEL events still satisfy their policies for forward consumer trust depends on (a) whether the policy has threshold redundancy that lets it satisfy without the contested KEL's contribution, and (b) whether the operator can rotate the contested KEL out via the dependent IEL's `Evl`. See [../design/protocol-doctrine.md §Pre-divergence verifiability survives contestation](../design/protocol-doctrine.md#pre-divergence-verifiability-survives-contestation).
+- **Operator response:** Cascade-reincept is required only when the dependent chain *itself* becomes contested or its policy can no longer satisfy without the contested KEL. Pre-divergence anchors stay readable and ground past trust decisions. The dependent IEL's `Evl` rotates the contested KEL out of `governancePolicy`; if redundancy is insufficient and forward operation needs an anchor the contested KEL can no longer provide, the dependent IEL must reincept against a different anchoring KEL, and the dependent SELs that need to forward-extend must reincept against the new IEL.
 - **Doctrine reference:** [../../AGENTS.md §System Thesis](../../AGENTS.md#system-thesis) (cascade-reincept honesty) + [../design/protocol-doctrine.md §Limit of the Doctrine](../design/protocol-doctrine.md#limit-of-the-doctrine) (cascade-reincept bullet).
 
 ### IEL Contested Cascade
 
 **Scenario:** An IEL becomes contested (divergence on any IEL is immediately contested by privileged-divergence rule, since every IEL event is privileged).
-- **Cascade effect:** SELs bound to any event in the contested IEL chain lose authorization basis. Consumers cannot tell from chain data which IEL event was authored legitimately; they cannot ground SEL trust in any IEL event on a contested chain. See [../design/primitives/data/event-logs/iel/event-log.md §Effect on Bound SELs](../design/primitives/data/event-logs/iel/event-log.md#effect-on-bound-sels).
-- **Operator response:** Reincept SELs under a new IEL prefix; rebind dependent chains forward to the new identity.
+- **Cascade effect:** SELs whose binding sits on pre-divergence IEL state (`bound_event.serial < first_divergent_serial`) remain trust-evaluable — their `ielEvent` references the structurally-final pre-divergence segment. SELs that would forward-extend their binding against a post-divergence `ielEvent` face the freeze, since post-divergence IEL events are submitter-indistinguishable and the protocol provides no policy state for those bindings to resolve against. See [../design/primitives/data/event-logs/iel/event-log.md §Effect on Bound SELs](../design/primitives/data/event-logs/iel/event-log.md#effect-on-bound-sels).
+- **Operator response:** Reincept SELs that need to forward-extend under a new IEL prefix; rebind dependent chains forward to the new identity. SELs that don't need to extend continue to verify against their pre-divergence IEL binding.
 
 ### Stale-Binding Propagation
 
@@ -315,7 +315,7 @@ Cross-cutting concerns at the policy and SAID-resolution layer that apply across
 
 ### Anchor Verification on Recovered or Contested KEL
 
-IEL/SEL verifiers resolve authorization by checking that the event's SAID is anchored under the relevant policy via a signed `ixn` in one or more KELs. The anchoring KEL itself must be valid for the anchor to ground authorization. A recovered KEL has nuanced consequences for past anchors (anchors on the surviving branch survive; anchors on the archived branch may not); a contested KEL is whole-chain-suspect and cannot ground new trust decisions. See [../design/primitives/data/event-logs/iel/event-log.md §Trust Caveat — Recovered or Contested Anchoring KELs](../design/primitives/data/event-logs/iel/event-log.md#trust-caveat--recovered-or-contested-anchoring-kels).
+IEL/SEL verifiers resolve authorization by checking that the event's SAID is anchored under the relevant policy via a signed `ixn` in one or more KELs. The anchoring KEL itself must be valid for the anchor to ground authorization. A recovered KEL has nuanced consequences for past anchors (anchors on the surviving branch survive; anchors on the archived branch may not); a contested KEL is forward-terminal — pre-divergence anchors it produced retain validity, while post-divergence anchors are submitter-indistinguishable and the chain cannot produce fresh anchors going forward. See [../design/primitives/data/event-logs/iel/event-log.md §Trust Caveat — Recovered or Contested Anchoring KELs](../design/primitives/data/event-logs/iel/event-log.md#trust-caveat--recovered-or-contested-anchoring-kels).
 
 ## Verifier-Merge Architecture
 
