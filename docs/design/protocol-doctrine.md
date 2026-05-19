@@ -109,7 +109,7 @@ SEL is the only primitive where authorization context is referenced via a separa
 
 Each SEL event's `ielEvent` must be at-or-after its parent event's `ielEvent` in IEL chain order, applied per branch independently. A new branch's `ielEvent` is constrained only by its branch parent (the divergence ancestor on a fork-contest); branches with different parent-chains don't constrain each other.
 
-**Consequence on divergent SEL chains.** Branches may reference different IEL events at the same SEL serial, and thus may resolve to different governance/auth policies on each branch. This within-chain policy variation is bounded by two rules: the seal-cap caps how far back branches can diverge, and privileged-divergence-is-terminal caps how long the chain can stay in a divergent state. KEL and IEL never have within-chain policy variation — KEL's authorization is intrinsic to its own commitments, and every IEL event is governance-authorized so any divergence is immediately contested.
+**Consequence on divergent SEL chains.** Branches may reference different IEL events at the same SEL serial, and thus may resolve to different governance/auth policies on each branch. This within-chain policy variation is bounded by two rules: the seal-cap bounds where divergence can occur, and privileged-divergence-is-terminal bounds what state divergence can resolve to (any privileged event in the divergent set forces contested-terminal). KEL and IEL never have within-chain policy variation — KEL's authorization is intrinsic to its own commitments, and every IEL event is governance-authorized so any divergence is immediately contested.
 
 #### Privileged Divergence is Terminal
 
