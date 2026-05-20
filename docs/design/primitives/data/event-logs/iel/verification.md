@@ -126,7 +126,7 @@ The chain-wide `policy_satisfied: bool` answers "is the chain currently authorit
 
 - Caller provides `queried_saids: BTreeSet<Digest256>` up-front — the IEL event SAIDs the caller cares about.
 - During the chain walk, for each event whose SAID appears in `queried_saids`:
-  - If the event is on the pre-divergence shared portion of the chain (or the chain is non-divergent) AND auth-passed, the verifier adds the SAID to `satisfied_saids`.
+  - If the event is at-or-below `lastSealAdvancingEvent` AND on the pre-divergence shared portion of the chain (or the chain is non-divergent) AND auth-passed, the verifier adds the SAID to `satisfied_saids`.
   - The verifier snapshots the event's tracked `(authPolicy, governancePolicy)` into a SAID-keyed map, available post-verification via `auth_policy_at(said)` / `governance_policy_at(said)`.
 - For events NOT in `queried_saids`, the verifier still performs anchor checks during the walk (chain-validity requires it) but does not retain per-event policy state — branch state's running `trackedAuthPolicy` / `trackedGovernancePolicy` is sufficient for in-flight checks. No snapshot is kept post-verification; `auth_policy_at(said)` / `governance_policy_at(said)` return `None` for any SAID outside `queried_saids`.
 
@@ -145,7 +145,7 @@ IelVerification:
     is_decommissioned: bool
     lastSealAdvancingEvent: Option<Digest256> // SAID of most recent Evl
     queried_saids: BTreeSet<Digest256>       // caller-declared SAIDs of interest
-    satisfied_saids: BTreeSet<Digest256>     // verifier-populated subset (auth-passed, pre-divergence)
+    satisfied_saids: BTreeSet<Digest256>     // verifier-populated subset (auth-passed, at-or-below-seal, pre-divergence)
     // policy_history: BTreeMap<Digest256, (Digest256, Digest256)> — caller-bounded by queried_saids
 ```
 

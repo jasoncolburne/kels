@@ -381,16 +381,16 @@ Dependent SEL trying to extend:
   IEL resolver: "bound event lives at v_d ≥ first_divergent_serial"
    → rejects with IelDivergent.
 
-  Submitter tries with pre-divergence binding:
-    [Upd_v_new, ielEvent=Evl_{d-1}.said]   ← bound at v_{d-1} (pre-div)
+  Submitter tries with at-or-below-seal pre-divergence binding:
+    [Upd_v_new, ielEvent=Evl_{d-1}.said]   ← bound at v_{d-1}, also ≤ seal
 
-  IEL resolver: "bound event in pre-divergence shared prefix" → chain-validity
-   and consumer trust both OK on the pre-divergence binding (see
+  IEL resolver: "bound event at-or-below seal AND below divergent serial"
+   → chain-validity and consumer trust both OK on the binding (see
    ../iel/event-log.md §Effect on Bound SELs and
    ../../../../protocol-doctrine.md §Pre-divergence verifiability survives
-   contestation). The SEL stays trust-evaluable against the pre-divergence
-   IEL state; forward extension that would require a post-divergence
-   ielEvent is what triggers migration to a new IEL.
+   contestation). The SEL stays trust-evaluable against the at-or-below-seal
+   IEL state; forward extension that would require an above-seal ielEvent
+   is what triggers migration to a new IEL.
 ```
 
 ### 9. Concurrent Dec + Sea/Dec at v_d — federation race, infrastructure-layer convergence

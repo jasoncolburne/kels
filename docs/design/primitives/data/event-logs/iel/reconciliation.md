@@ -149,7 +149,7 @@ any new submission would be rejected by the contested-state gate.
 
 ### 3. Cross-chain effect: SELs bound to a divergent IEL event
 
-If an SEL's `ielEvent` references an IEL event that lives on a now-divergent IEL branch, the SEL's authorization resolution returns "IEL is divergent at the bound branch — cannot resolve" and SEL submissions to that chain are rejected with `IelDivergent`. SELs stay in their pre-divergence state until the IEL is contested-and-replaced.
+If an SEL's `ielEvent` references an IEL event that lives on a now-divergent IEL branch — or that lives above the IEL's `lastSealAdvancingEvent` in the gap between seal and divergence — the SEL's authorization resolution returns "IEL state above the seal — cannot resolve" and SEL submissions to that chain are rejected with `IelDivergent`. SELs stay in their at-or-below-seal binding state until the IEL is contested-and-replaced.
 
 ```
 IEL chain (now divergent at v_d):
@@ -157,7 +157,7 @@ IEL chain (now divergent at v_d):
   [Icp] → [Evl_v1] → ... → [Evl_{d-1}] ─┬─ Evl_d_a
                                         └─ Evl_d_b    ← contested-terminal
 
-SEL chain bound to the IEL (last good binding pre-divergence):
+SEL chain bound to the IEL (last good at-or-below-seal binding):
 
   [Icp] → [Upd_v1, ielEvent=Evl_{d-1}.said] → ...
 
@@ -167,17 +167,17 @@ SEL chain bound to the IEL (last good binding pre-divergence):
   IEL resolver: "bound event lives at v_d ≥ first_divergent_serial"
    → rejects with IelDivergent.
 
-  Submitter retries with stable pre-divergence binding:
-    [Upd_v_new, ielEvent=Evl_{d-1}.said]   ← bound at v_{d-1} < d
+  Submitter retries with stable at-or-below-seal binding:
+    [Upd_v_new, ielEvent=Evl_{d-1}.said]   ← bound at v_{d-1} ≤ seal, < d
 
-  IEL resolver: "bound event is in pre-divergence shared prefix" → OK
-   for chain-validity, and consumer trust remains intact for the
-   pre-divergence binding per protocol-doctrine.md §Pre-divergence
+  IEL resolver: "bound event at-or-below seal AND below divergent serial"
+   → OK for chain-validity, and consumer trust remains intact for the
+   at-or-below-seal binding per protocol-doctrine.md §Pre-divergence
    verifiability survives contestation. Forward extension that would bind
-   to a post-divergence IEL event is what's blocked.
+   to an above-seal IEL event is what's blocked.
 ```
 
-Bindings at serials strictly less than `first_divergent_serial` resolve cleanly (pre-divergence portion is unambiguous). Bindings at-or-after the divergent serial are rejected as `IelDivergent`. SEL operator's recovery path: contest the SEL or migrate to a different IEL.
+Bindings at-or-below `lastSealAdvancingEvent` AND strictly less than `first_divergent_serial` resolve cleanly (the at-or-below-seal portion is structurally trustworthy). Bindings above the seal — whether in the seal-to-divergence gap or at-or-above the divergent serial — are rejected as `IelDivergent`. SEL operator's recovery path: contest the SEL or migrate to a different IEL.
 
 ### 4. Multiple adversary injections to different nodes
 
