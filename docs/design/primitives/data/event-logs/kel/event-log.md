@@ -18,7 +18,7 @@ State is computed from the chain's events, never tracked as a separate flag. The
 - `is_contested: bool` — `true` iff divergent AND the divergent set contains a privileged event (`Rot`, `Ror`, or `Dec`).
 - `is_decommissioned: bool` — `Dec` event in a linear chain (Dec landing in a divergent set produces contested, not decommissioned).
 - `lastSealAdvancingEvent: Option<Digest256>` — SAID of the most recent `Rec`/`Ror`/`Rot`. The chain's seal-cap watermark (see §Seal and Key Non-Poisonability).
-- `lastRecoveryRevealingEvent: Option<Digest256>` — SAID of the most recent `Rec`/`Ror`/`Dec`. Tracks recovery-key revelation for the spent-key / non-poisonability rule and the Ror cap; orthogonal to the seal (`Rot` advances the seal without revealing the recovery key; `Dec` reveals the recovery key without advancing the seal).
+- `lastRecoveryRevealingEvent: Option<Digest256>` — SAID of the most recent `Rec`/`Ror`/`Dec`. Tracks recovery-key revelation for the spent-key / immunity rule and the Ror cap; orthogonal to the seal (`Rot` advances the seal without revealing the recovery key; `Dec` reveals the recovery key without advancing the seal).
 
 ## Event Kinds
 
@@ -35,7 +35,7 @@ State is computed from the chain's events, never tracked as a separate flag. The
 
 For per-kind field rules and typical chain shapes, see [events.md](events.md).
 
-## Seal and Key Non-Poisonability
+## Seal and Key Immunity
 
 KEL tracks two related-but-distinct concepts. The membership sets diverge: seal-advance includes `Rot` (single-signed; no recovery-key revelation), while recovery-revealing includes `Dec` (terminal; doesn't advance the seal). The orthogonality lets the protocol bound chain-state changes and recovery-preimage staleness independently.
 

@@ -6,7 +6,7 @@ For the chain-state semantics each ceremony reaches, see the design docs:
 
 - What `Rec` archives → [event-log.md §Recovery (Rec)](event-log.md#recovery-rec).
 - How a chain transitions to Contested → [event-log.md §Contested-state transitions](event-log.md#contested-state-transitions).
-- The seal-cap and spent-key rule → [event-log.md §Seal and Key Non-Poisonability](event-log.md#seal-and-key-non-poisonability).
+- The seal-cap and spent-key rule → [event-log.md §Seal and Key Non-Poisonability](event-log.md#seal-and-key-immunity).
 
 ## Architecture
 
