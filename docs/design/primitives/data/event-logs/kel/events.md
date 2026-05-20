@@ -80,7 +80,7 @@ Anchors on `Rot` and `Ror` are structurally durable against `Rec` archival — b
 
 `Rec` / `Ror` / `Dec` reveal the `recoveryKey` field. Once revealed in any event on the chain, that recovery key is "spent" — future divergent events cannot be resolved via `Rec` against the spent key. After recovery-key revelation, contested-termination via a privileged event (`Rot`, `Ror`, or `Dec`) landing in a divergent set is the only protocol path that ends the chain.
 
-`Ror` is the proactive form: the chain holder rotates both keys (no divergence required), revoking any future divergent recovery a second party could attempt with the now-stale key material. Cadence is operator guidance — see §Cap doctrine below.
+`Ror` is the proactive form: the chain holder rotates both keys (no divergence required), revoking any future divergent recovery a second party could attempt with the now-stale key material. Cadence is operator guidance — see §Seal-advance cap below.
 
 ### Forward-key commitments
 
@@ -96,7 +96,7 @@ Establishment events (every kind except `Ixn`) commit one or both forward-key di
 
 The verifier seeds `tracked_rotation_hash` / `tracked_recovery_hash` from inception and updates them on each establishment event. Future revelations are checked against the tracked digest.
 
-### Cap doctrine
+### Seal-advance cap
 
 KEL has one protocol-enforced cap (the seal-advance cap) plus operator guidance on recovery-preimage rotation cadence.
 
@@ -106,7 +106,7 @@ KEL has one protocol-enforced cap (the seal-advance cap) plus operator guidance 
 
 **Adversary bound.** The seal-advance cap bounds an adversary's fork at 62 events before they need to satisfy a seal-advancing primitive — which requires at least the rotation-key preimage (for `Rot`) or the recovery-key preimage (for `Rec`/`Ror`). Builder policy: when an `ixn` would exceed the seal-advance cap, auto-insert `Rot` (cheaper; no recovery-preimage advance) or `Ror` per the operator's recovery-preimage rotation cadence guidance above.
 
-The seal-advance cap is the structural analog of SEL's evaluation seal — see [../sel/events.md §Evaluation bound](../sel/events.md#evaluation-bound).
+The seal-advance cap is the structural analog of SEL's seal-advance cap — see [../sel/events.md §Seal-advance cap](../sel/events.md#seal-advance-cap).
 
 ## Typical Chain Shapes
 
@@ -122,7 +122,7 @@ s62 kind=ror  publicKey=kN, recoveryKey=r0,         ← proactive recovery-rotat
     rotationHash=h(kN+1), recoveryHash=h(r1)
 ```
 
-`Ror` at s62 keeps the chain inside the seal-advance cap. A `Rot` at s62 would also satisfy the seal-advance cap; an operator who wants to refresh the recovery-key preimage commitment chooses `Ror` per their operator-guidance cadence (see §Cap doctrine).
+`Ror` at s62 keeps the chain inside the seal-advance cap. A `Rot` at s62 would also satisfy the seal-advance cap; an operator who wants to refresh the recovery-key preimage commitment chooses `Ror` per their operator-guidance cadence (see §Seal-advance cap).
 
 ### Delegated inception
 

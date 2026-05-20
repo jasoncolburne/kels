@@ -149,7 +149,7 @@ The seal-advance cap is `MINIMUM_PAGE_SIZE − 2 = 62`. After 62 non-seal-advanc
 
 The `− 2` headroom is sized for the worst-case atomic batch — a `[Rpr, Sea]` repair-and-resealing batch fitting in one `MINIMUM_PAGE_SIZE`-bounded page. `MINIMUM_PAGE_SIZE` is a protocol constant, not a per-deployment knob, so batches produced on any conformant node verify on every other conformant node.
 
-The SEL seal-advance cap is structurally symmetric with KEL's seal-advance cap (`MINIMUM_PAGE_SIZE − 2 = 62`, advancing on `Rec`/`Ror`/`Rot`) — both leave 2-slot trailing room for the worst-case atomic recovery/repair batch (`[Rec, Rot]` on KEL; `[Rpr, Sea]` on SEL). See [../kel/events.md §Two parallel caps](../kel/events.md#two-parallel-caps).
+The SEL seal-advance cap is structurally symmetric with KEL's seal-advance cap (`MINIMUM_PAGE_SIZE − 2 = 62`, advancing on `Rec`/`Ror`/`Rot`) — both leave 2-slot trailing room for the worst-case atomic recovery/repair batch (`[Rec, Rot]` on KEL; `[Rpr, Sea]` on SEL). See [../kel/events.md §Seal-advance cap](../kel/events.md#seal-advance-cap).
 
 ### Policy immunity (lives on IEL)
 

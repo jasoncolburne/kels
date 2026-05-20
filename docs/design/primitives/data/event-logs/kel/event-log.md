@@ -18,7 +18,7 @@ State is computed from the chain's events, never tracked as a separate flag. The
 - `is_contested: bool` — `true` iff divergent AND the divergent set contains a privileged event (`Rot`, `Ror`, or `Dec`).
 - `is_decommissioned: bool` — `Dec` event in a linear chain (Dec landing in a divergent set produces contested, not decommissioned).
 - `lastSealAdvancingEvent: Option<Digest256>` — SAID of the most recent `Rec`/`Ror`/`Rot` that landed cleanly on the linear chain. **A privileged event creating or joining a divergent set does NOT advance the seal** — the protocol cannot identify a canonical submitter, so the seal stays at the prior linear-portion advance. The chain's seal-cap watermark (see §Seal and Key Immunity).
-- `lastRecoveryRevealingEvent: Option<Digest256>` — SAID of the most recent `Rec`/`Ror`/`Dec`. Tracks recovery-key revelation for the spent-key / immunity rule; orthogonal to the seal (`Rot` advances the seal without revealing the recovery key; `Dec` reveals the recovery key without advancing the seal). Recovery-preimage rotation cadence is operator guidance, not protocol-enforced — see [events.md §Cap doctrine](events.md#cap-doctrine).
+- `lastRecoveryRevealingEvent: Option<Digest256>` — SAID of the most recent `Rec`/`Ror`/`Dec`. Tracks recovery-key revelation for the spent-key / immunity rule; orthogonal to the seal (`Rot` advances the seal without revealing the recovery key; `Dec` reveals the recovery key without advancing the seal). Recovery-preimage rotation cadence is operator guidance, not protocol-enforced — see [events.md §Seal-advance cap](events.md#seal-advance-cap).
 
 ## Event Kinds
 
@@ -37,12 +37,12 @@ For per-kind field rules and typical chain shapes, see [events.md](events.md).
 
 ## Seal and Key Immunity
 
-KEL tracks two related-but-distinct concepts. The membership sets diverge: seal-advance includes `Rot` (single-signed; no recovery-key revelation), while recovery-revealing includes `Dec` (terminal; doesn't advance the seal). The orthogonality lets the protocol bound chain-state changes (via the seal-advance cap) while leaving recovery-preimage rotation cadence to operator guidance — recovery keys are typically hardware-held and preimage-identified rather than usage-degraded, so a protocol-forced cadence would impose access on cold-stored / separated-custody recovery keys on a fixed schedule. See [events.md §Cap doctrine](events.md#cap-doctrine).
+KEL tracks two related-but-distinct concepts. The membership sets diverge: seal-advance includes `Rot` (single-signed; no recovery-key revelation), while recovery-revealing includes `Dec` (terminal; doesn't advance the seal). The orthogonality lets the protocol bound chain-state changes (via the seal-advance cap) while leaving recovery-preimage rotation cadence to operator guidance — recovery keys are typically hardware-held and preimage-identified rather than usage-degraded, so a protocol-forced cadence would impose access on cold-stored / separated-custody recovery keys on a fixed schedule. See [events.md §Seal-advance cap](events.md#seal-advance-cap).
 
 | Concept | Advances on | Used for |
 |---|---|---|
 | `lastSealAdvancingEvent` | `Rec`/`Ror`/`Rot` | Seal-cap rule: `event_serial >= seal_serial`; recovery cannot truncate at-or-before the seal. Bounds the chain-state advance cap (`MINIMUM_PAGE_SIZE − 2 = 62` non-seal-advancing events between privileged-or-archiving events). See [../../../../protocol-doctrine.md §Forks are Seal-Bounded](../../../../protocol-doctrine.md#forks-are-seal-bounded). |
-| `lastRecoveryRevealingEvent` | `Rec`/`Ror`/`Dec` | Spent-key rule. Once any recovery-revealing event lands, the recovery key is publicly known; subsequent attempts to recover using the spent key fail. Recovery-preimage rotation cadence (how often `Ror` should land to refresh the commitment) is operator guidance — see [events.md §Cap doctrine](events.md#cap-doctrine) — not a protocol-enforced cap. |
+| `lastRecoveryRevealingEvent` | `Rec`/`Ror`/`Dec` | Spent-key rule. Once any recovery-revealing event lands, the recovery key is publicly known; subsequent attempts to recover using the spent key fail. Recovery-preimage rotation cadence (how often `Ror` should land to refresh the commitment) is operator guidance — see [events.md §Seal-advance cap](events.md#seal-advance-cap) — not a protocol-enforced cap. |
 
 `Dec` is terminal — it enforces the seal but does not advance it.
 
@@ -246,7 +246,7 @@ The page+resume-verify pattern is the SEL backport: prior to it, the discriminat
 
 The seal-advance cap (`MINIMUM_PAGE_SIZE − 2 = 62` non-seal-advancing events between privileged-or-archiving events) caps the chain since the last `Rec`/`Ror`/`Rot`. Recovery cannot truncate at or before the chain's seal, so the divergence ancestor is strictly after `lastSealAdvancingEvent` and the post-`d` window is at most 62 events combined. One page (limit 64) covers both branches and the bundled `[Rec, Rot]`; one DB round-trip; no per-hop queries.
 
-Recovery-preimage rotation cadence (how often `Ror` should land between recovery-revealing events) is operator guidance, not a protocol-enforced cap — see [events.md §Cap doctrine](events.md#cap-doctrine).
+Recovery-preimage rotation cadence (how often `Ror` should land between recovery-revealing events) is operator guidance, not a protocol-enforced cap — see [events.md §Seal-advance cap](events.md#seal-advance-cap).
 
 ## Contested-state transitions
 

@@ -14,7 +14,7 @@ All cases below depend on these protocol-enforced invariants:
 
 3. **Bounded operations**: Recovery batch (`events + rec + rot`) ≤ 64, contested-transition batch (`events + Rot`/`Ror`/`Dec`) ≤ 63, adversary chain to archive ≤ 62. All fit in one `MINIMUM_PAGE_SIZE`-bounded page.
 
-Recovery-preimage rotation cadence (how often `Ror` should land) is **operator guidance**, not a protocol-enforced invariant — see [events.md §Cap doctrine](events.md#cap-doctrine). Reconciliation correctness does not depend on a cap on `Rec`/`Ror`/`Dec` frequency.
+Recovery-preimage rotation cadence (how often `Ror` should land) is **operator guidance**, not a protocol-enforced invariant — see [events.md §Seal-advance cap](events.md#seal-advance-cap). Reconciliation correctness does not depend on a cap on `Rec`/`Ror`/`Dec` frequency.
 
 These invariants are what make synchronous archival, single-page discriminator walks, and atomic batched submissions all feasible. The page+resume-verify discriminator (SEL backport) relies on invariant 4.
 
