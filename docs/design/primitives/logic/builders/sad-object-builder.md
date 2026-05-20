@@ -23,7 +23,7 @@ SadObjectBuilder::build(
 
 The builder computes the SAID over the canonical serialization (content + populated wrapper fields, with `said` blanked) and returns the assembled SAD object.
 
-**Consumers:** credentials (`issuerIelEvent` / `subjectIelEvent` carried as SAD wrapper fields); exchange envelopes; policy SADs; any application-layer SAD-bearing surface; SEL `content` (the SEL event's `content` field is itself a SAD whose wrapper this builder produces).
+**Consumers:** credentials (`issuerIelEvent` / `subjectIelEvent` carried as SAD wrapper fields); exchange envelopes; policy SADs; any application-layer SAD-bearing surface; the SAD object referenced by the SEL event's `content` field (which holds the SAID — the SAD body is stored separately in the object store; this builder produces the wrapper for that body).
 
 **Dependencies:** [`../../data/sad/sad.md`](../../data/sad/sad.md) for the SAD shape, [`../../data/sad/said.md`](../../data/sad/said.md) for SAID computation, [`../../data/sad/custody.md`](../../data/sad/custody.md) for `ownerIelEvent` / `readPolicy` semantics, [`../../../infrastructure/sadstore.md`](../../../infrastructure/sadstore.md) for storage-side enforcement of the wrapper fields.
 

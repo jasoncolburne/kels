@@ -6,7 +6,7 @@ For the chain-state semantics each ceremony reaches, see the design docs:
 
 - What `Rec` archives → [event-log.md §Recovery (Rec)](event-log.md#recovery-rec).
 - How a chain transitions to Contested → [event-log.md §Contested-state transitions](event-log.md#contested-state-transitions).
-- The seal-cap and spent-key rule → [event-log.md §Seal and Key Non-Poisonability](event-log.md#seal-and-key-non-poisonability).
+- The seal-cap and spent-key rule → [event-log.md §Seal and Key Immunity](event-log.md#seal-and-key-immunity).
 
 ## Architecture
 
@@ -49,7 +49,7 @@ See [../../../../protocol-doctrine.md §Operation Categories](../../../../protoc
 When a member KEL is compromised, the operator's recourse depends on what has been compromised:
 
 1. **`identity-admin recover`** — Issues a recovery event (`Rec`), reveals the recovery key, archives the compromised branch via the discriminator. Applicable when the recovery key is still uncompromised.
-2. **`identity-admin rotate-recovery`** — Issues a recovery-rotation event (`Ror`), rotating both signing and recovery keys. Used for the proactive-ROR cadence and as a forward-secrecy ratchet.
+2. **`identity-admin rotate-recovery`** — Issues a recovery-rotation event (`Ror`), rotating both signing and recovery keys. Used for the Ror-cap cadence and as a forward-secrecy ratchet.
 3. **`identity-admin decommission`** — Issues a `Dec` event, ending the KEL cleanly on a linear chain.
 
 If the recovery key has been compromised (no in-band recovery path remains), the recourse is at the IEL layer: rotate the compromised KEL out of the dependent IEL's `governancePolicy` via IEL `Evl`. The protocol has no in-band primitive that re-grants authority to a party who no longer holds the chain's commitments; the KEL prefix is retired from the federation by IEL-policy evolution.

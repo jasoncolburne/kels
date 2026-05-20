@@ -107,16 +107,18 @@ Policy state is **branch-tracked**. Two fields:
 
 ### Terminal-state determination and authorization
 
-All events on IEL require HARD anchor: a `Dec` whose governance check fails is rejected at the verifier; the chain stays at its prior state. Structural integrity rules — SAID validity, serial monotonicity, immunity check on policy evolution — stay HARD as well.
+> **Verifier vs merge-engine semantics.** The verifier itself does not reject events — it records what it observed (anchored SAIDs, satisfied SAIDs) and surfaces authorization failures via `policy_satisfied = false` on the verification token. "HARD" below refers to **merge-engine enforcement against the verifier's output**: the merge layer treats `policy_satisfied = false` (and any auth-failure indicator the verifier exposes) as rejection of the candidate event, so an auth-failed event never lands on the chain. The verifier-side soft-fail composition is documented in [../../../../protocol-doctrine.md §Verifier and merge are distinct treatments](../../../../protocol-doctrine.md#verifier-and-merge-are-distinct-treatments).
+
+All events on IEL require HARD anchor (merge-layer): a `Dec` whose governance check fails is rejected by the merge engine; the chain stays at its prior state. Structural integrity rules — SAID validity, serial monotonicity, immunity check on policy evolution — stay HARD as well.
 
 The verifier's terminal-state-determination rule on IEL is structural:
-- Divergent at `v_d`? **Yes → contested (terminal).** Every IEL event is privileged, so any divergent set on IEL contains a privileged event by construction; privileged-divergence-is-terminal fires at first 2-event observation. The "divergent-but-not-yet-contested" intermediate state doesn't arise on IEL; it exists for KEL (non-privileged Rot/Ixn divergence, recoverable via `Rec`) and SEL (non-privileged Upd divergence, recoverable via `Rpr`).
+- Divergent at `v_d`? **Yes → contested (terminal).** Every IEL event is privileged, so any divergent set on IEL contains a privileged event by construction; privileged-divergence-is-terminal fires at first 2-event observation. The "divergent-but-not-yet-contested" intermediate state doesn't arise on IEL; it exists for KEL (non-privileged Ixn-Ixn divergence, recoverable via `Rec`) and SEL (non-privileged Upd-Upd divergence at v ≥ 2, recoverable via `Rpr`).
 - Linear with a `Dec` event present? Decommissioned (terminal-via-Dec).
 - Linear without `Dec`? Active.
 
 ### Contested-state derivation
 
-On IEL, the contested chain state is derived structurally from divergence: `is_contested ⇔ is_divergent`. Every IEL event is privileged, so the verifier sets `is_contested = true` whenever it observes a divergent set. Both accessors are exposed for cross-primitive API symmetry with KEL and SEL — `is_contested()` wraps `is_divergent()` on IEL. On KEL and SEL the two diverge: a non-privileged divergent set is `is_divergent` without being `is_contested` until a non-archiving privileged event joins via the upgrade rule.
+On IEL, the contested chain state is derived structurally from divergence: `is_contested ⇔ is_divergent`. Every IEL event is privileged, so the verifier sets `is_contested = true` whenever it observes a divergent set. Both accessors are exposed for cross-primitive API symmetry with KEL and SEL — `is_contested()` wraps `is_divergent()` on IEL. On KEL and SEL the two diverge: a non-privileged divergent set is `is_divergent` without being `is_contested` until a privileged event joins via the upgrade rule.
 
 The handler-level rejection on contested/decommissioned chains is a separate seam that prevents new submits; this verifier-level mechanism handles events that reach the verifier some other way (gossip-pulled chains where the local node hadn't yet observed the terminal, resume from a stored chain that contains a terminal).
 
@@ -126,7 +128,7 @@ The chain-wide `policy_satisfied: bool` answers "is the chain currently authorit
 
 - Caller provides `queried_saids: BTreeSet<Digest256>` up-front — the IEL event SAIDs the caller cares about.
 - During the chain walk, for each event whose SAID appears in `queried_saids`:
-  - If the event is on the pre-divergence shared portion of the chain (or the chain is non-divergent) AND auth-passed, the verifier adds the SAID to `satisfied_saids`.
+  - If the event is at-or-below `lastSealAdvancingEvent` AND on the pre-divergence shared portion of the chain (or the chain is non-divergent) AND auth-passed, the verifier adds the SAID to `satisfied_saids`.
   - The verifier snapshots the event's tracked `(authPolicy, governancePolicy)` into a SAID-keyed map, available post-verification via `auth_policy_at(said)` / `governance_policy_at(said)`.
 - For events NOT in `queried_saids`, the verifier still performs anchor checks during the walk (chain-validity requires it) but does not retain per-event policy state — branch state's running `trackedAuthPolicy` / `trackedGovernancePolicy` is sufficient for in-flight checks. No snapshot is kept post-verification; `auth_policy_at(said)` / `governance_policy_at(said)` return `None` for any SAID outside `queried_saids`.
 
@@ -145,7 +147,7 @@ IelVerification:
     is_decommissioned: bool
     lastSealAdvancingEvent: Option<Digest256> // SAID of most recent Evl
     queried_saids: BTreeSet<Digest256>       // caller-declared SAIDs of interest
-    satisfied_saids: BTreeSet<Digest256>     // verifier-populated subset (auth-passed, pre-divergence)
+    satisfied_saids: BTreeSet<Digest256>     // verifier-populated subset (auth-passed, at-or-below-seal, pre-divergence)
     // policy_history: BTreeMap<Digest256, (Digest256, Digest256)> — caller-bounded by queried_saids
 ```
 
@@ -178,7 +180,7 @@ Accessors:
 | `governancePolicy` satisfaction | `evaluate_anchored_policy(branch.trackedGovernancePolicy, event.said)` for Evl/Dec |
 | Policy immunity | Every introduced/evolved authPolicy or governancePolicy must have `immune: true` |
 
-Note: There is no content-preservation rule (IEL has no `content` field). There is no proactive-evaluation bound (every IEL event is governance-authorized — implicit bound).
+Note: There is no content-preservation rule (IEL has no `content` field). There is no seal-advance cap (every IEL event is governance-authorized — implicit bound).
 
 ## Divergence Handling
 

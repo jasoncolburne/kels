@@ -19,6 +19,16 @@ The substantive part of the design. `docs/design/primitives/` splits into two to
 - **`data/`** — the chain primitives (KEL, IEL, SEL). Each has its own subdirectory under `data/event-logs/{kel,iel,sel}/` and carries the load-bearing semantic content. This is the heart of the design.
 - **`logic/`** — the code abstractions built on top of the chains (builders, verifiers, resolvers, stores, event-transfer, policies). One stub per primitive; less semantic weight than data primitives, but the canonical names live here and code aligns to them.
 
+### Data primitives — `data/sad/`
+
+Foundational concept docs that every event-log primitive references. Read these first — chain events carry SAD content and resolve identity-rooting and custody through these definitions.
+
+- [sad.md](primitives/data/sad/sad.md) — SAD (Self-Addressed Data): content-addressable object shape and field rules.
+- [said.md](primitives/data/sad/said.md) — SAID (Self-Addressed Identifier): Blake3-256 hash construction, prefix vs SAID distinction, the placeholder-blanking rules.
+- [identity-rooting.md](primitives/data/sad/identity-rooting.md) — how chains bind to identities (the prefix derivation patterns shared across primitives).
+- [compaction.md](primitives/data/sad/compaction.md) — the compacting SAD store and the SAID-preservation invariants the compactor relies on.
+- [custody.md](primitives/data/sad/custody.md) — per-SAD `ownerIelEvent` (write attestation) and `readPolicy` (read enforcement) semantics; the read/write authority model that decouples from availability.
+
 ### Data primitives — `data/event-logs/`
 
 Three primitives (KEL, IEL, SEL) implement the doctrine in different shapes. Each primitive has five docs in the same structural roles, and reading them in the same internal order makes the parallel structure visible.
@@ -47,9 +57,9 @@ New concepts you'll meet:
 
 - Forward-key commitments — `rotationHash` and `recoveryHash` pre-commit the next pair of keys; the revealing event must produce a matching preimage.
 - The recovery-revealing event class — `Rec`/`Ror`/`Dec` each reveal the recovery key; all three are dual-signed.
-- Within that class, `Rec` is the discriminator-based recovery primitive (the only kind that archives), with two parent shapes — branch-tip-extending and divergence-ancestor-extending. `Ror`/`Dec` are recovery-revealing but non-archiving.
-- Proactive-ROR bound — a protocol-level cap on how many non-revealing events can sit between recovery-revealing events.
-- The upgrade rule — a non-privileged divergent set plus a gossip-delivered non-archiving privileged event upgrades the chain to contested. Applies to KEL and SEL; IEL is exempt because every IEL event is privileged.
+- Within that class, `Rec` is the discriminator-based recovery primitive (the only kind that archives), with two parent shapes — branch-tip-extending and divergence-ancestor-extending. `Ror`/`Dec` are recovery-revealing but privileged (do not archive).
+- Cap doctrine — the seal-advance cap (the only protocol-enforced KEL cap) bounds how many non-seal-advancing events can sit between `Rec`/`Ror`/`Rot` (62, derived from `MINIMUM_PAGE_SIZE − 2`). Recovery-preimage rotation cadence (how often `Ror` should land to refresh the recovery commitment) is operator guidance, not a protocol-enforced cap — recovery keys are typically hardware-held and preimage-identified, so cadence reflects custody and threat model. The privileged class (`Rot`/`Ror`/`Dec` plus the archiving `Rec`) and the recovery-revealing class (`Rec`/`Ror`/`Dec`) are distinct but overlapping concepts; the seal-advance cap uses the privileged-plus-archiving membership.
+- The upgrade rule — a non-privileged divergent set plus a gossip-delivered privileged event upgrades the chain to contested. Applies to KEL and SEL; IEL is exempt because every IEL event is privileged.
 
 Read in order: [events.md](primitives/data/event-logs/kel/events.md) → [event-log.md](primitives/data/event-logs/kel/event-log.md) → [merge.md](primitives/data/event-logs/kel/merge.md) → [verification.md](primitives/data/event-logs/kel/verification.md) → [reconciliation.md](primitives/data/event-logs/kel/reconciliation.md). Supplemental: [recovery-workflow.md](primitives/data/event-logs/kel/recovery-workflow.md) for the operational walkthrough of `Rec` ceremonies.
 

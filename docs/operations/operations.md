@@ -18,7 +18,7 @@ Additionally, the binding chain audit detects inconsistencies between HSM key bi
 
 The standard recovery flow works for identity:
 
-1. **Run `identity-admin recover`** or **`identity-admin contest`** via the identity service's manage endpoint. The HSM provides both the rotation and recovery keys for dual signing.
+1. **Run `identity-admin recover`** via the identity service's manage endpoint. The HSM provides both the rotation and recovery keys for dual signing. (For total key compromise, contested-terminal is reached structurally: any privileged event landing in a divergent set fires privileged-divergence-is-terminal — there is no dedicated `Cnt`/contest event to submit; see [../design/protocol-doctrine.md §Privileged Divergence is Terminal](../design/protocol-doctrine.md#privileged-divergence-is-terminal).)
 2. **The merge engine detects divergence**, identifies adversary events, archives them to mirror tables, inserts the recovery events, and creates a `RecoveryRecord` — all atomically within the merge transaction.
 3. **After recovery completes**, the adversary events are archived and the clean chain is all that remains. Normal operations resume immediately.
 
@@ -45,6 +45,6 @@ For both:
 
 Datastore tampering without key compromise is not a security threat — all KEL data is cryptographically verified (signatures, SAID integrity, chain linkage) before use. An attacker with only database access cannot forge valid events, though they can probably delete or modify data and break valid KELs.
 
-An attacker who has **both database access and broken keys** can write cryptographically valid but protocol-violating data directly to the database, bypassing the merge engine's invariant enforcement. For example, writing a chain that violates proactive ROR compliance (more than 62 non-revealing events between recovery-revealing events) would cause the verification engine to reject the KEL entirely, preventing normal operations including recovery.
+An attacker who has **both database access and broken keys** can write cryptographically valid but protocol-violating data directly to the database, bypassing the merge engine's invariant enforcement. For example, writing a chain that violates the seal-advance cap (more than 62 non-seal-advancing events between `Rec`/`Ror`/`Rot`) would cause the verification engine to reject the KEL entirely, preventing normal operations including recovery.
 
-In these cases, manual database surgery (or a restore) may be required to restore the KEL to a valid state before protocol-level recovery (`rec` or `cnt`) can proceed. The verification engine will reject the tampered KEL (fail-secure), but this also blocks recovery since the merge engine verifies the existing chain before accepting new events.
+In these cases, manual database surgery (or a restore) may be required to restore the KEL to a valid state before protocol-level recovery (`rec`) or any privileged event (which would otherwise fire privileged-divergence-is-terminal on landing in a divergent set) can proceed. The verification engine will reject the tampered KEL (fail-secure), but this also blocks recovery since the merge engine verifies the existing chain before accepting new events.

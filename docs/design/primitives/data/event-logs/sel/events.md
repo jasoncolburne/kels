@@ -11,7 +11,7 @@ Pure structural reference for SAD Event Log (SEL) event kinds, per-kind field ru
 | `Icp` | `kels/sel/v1/events/icp` | Inception (v0). Declares `identity`. Seeds prefix derivation via `(identity, topic)`. Permissionless — no authorization gate. |
 | `Est` | `kels/sel/v1/events/est` | Establishment (v1). The first authorization-gated event; carries `ielEvent` binding to the IEL plus the chain's first content. Tier-2 anchored per [../../../../protocol-doctrine.md §Anchor Tier Elevation](../../../../protocol-doctrine.md#anchor-tier-elevation) — raises per-attempt cost on SEL camping. |
 | `Upd` | `kels/sel/v1/events/upd` | Normal update (v2+) — append content to the chain. Routine, tier-1 anchored. |
-| `Sea` | `kels/sel/v1/events/sea` | Seal — governance evaluation. Advances `lastSealAdvancingEvent`. No policy-field evolution (policies live on IEL); may advance `ielEvent` to a newer IEL state. Back-to-back Sea allowed only when the new Sea **strictly advances** `ielEvent` — see [../../../../protocol-doctrine.md §Shape constraints on Sea](../../../../protocol-doctrine.md#shape-constraints-on-sea). |
+| `Sea` | `kels/sel/v1/events/sea` | Seal — governance evaluation. Advances `lastSealAdvancingEvent`. No policy-field evolution (policies live on IEL); may advance `ielEvent` to a newer IEL state. Back-to-back Sea allowed only when the new Sea **strictly advances** `ielEvent` — see [../../../../protocol-doctrine.md §Shape constraints on SEL Sea](../../../../protocol-doctrine.md#shape-constraints-on-sel-sea). |
 | `Rpr` | `kels/sel/v1/events/rpr` | Repair — resolves non-privileged divergence and seals. Extends a tip at `v_{d+1}`; discriminator-driven archival of the events on the branch not extended. |
 | `Dec` | `kels/sel/v1/events/dec` | Decommission — terminal event ending the chain. |
 
@@ -68,19 +68,27 @@ Rationale: SEL Icp is permissionless — by itself, it would land an "exists but
 
 The rule is enforced inside the verifier (`SelVerifier::finish_internal` returns `IncompleteInception` whenever any branch tip is still an `Icp`) so every consumer's verifier walk applies it — a tampered DB serving `[Icp]` alone is rejected at end-verification, not just at submit. Submit handlers do not duplicate the rule.
 
-The Icp itself is still permissionless and still dedup-idempotent across submitters — the rule only governs whether the batch as a whole lands. If `[Icp, Est_A]` and `[Icp, Est_B]` race, the SAIDs of the Est events differ (different `ielEvent` and/or content), so both Ests land at v1 forming a divergent set. The legitimate operator's `Rpr` resolves the divergence.
+The Icp itself is still permissionless and still dedup-idempotent across submitters — the rule only governs whether the batch as a whole lands. If `[Icp, Est_A]` and `[Icp, Est_B]` race, the SAIDs of the Est events differ (different `ielEvent` and/or content), so both Ests land at v=1 forming a 2-event privileged divergent set; privileged-divergence-is-terminal fires; the chain becomes contested-terminal. Reincept under a new `(identity, topic)` is the operator recourse.
 
 This rule is SEL-specific. IEL has no analogous rule — IEL Icp is itself policy-enforced (anchored under its declared `governancePolicy`, since every IEL event is governance-authorized), so an IEL Icp alone is already a meaningful, authorized chain birth.
 
-### Camping defense (Icp permissionless + Est tier-2 + inception batch required)
+### Camping defense (Icp permissionless + Est tier-2 + inception batch required + Est-Est mutual destruction)
 
-SEL's prefix derives from `(identity, topic)` — predictable and well-known. Any party can compute and race-incept SEL chains for tuples an operator might use. SEL's defense against this is structural and lives in three composed rules:
+SEL's prefix derives from `(identity, topic)` — predictable and well-known. Any party can compute and race-incept SEL chains for tuples an operator might use. SEL's defense against this is structural and lives in four composed rules:
 
 - **`Icp` is permissionless and dedup-idempotent.** Any submitter's `Icp` for the same `(identity, topic)` produces the same SAID; being first to submit gains nothing.
 - **`Est` is tier-2 anchored.** Every camping attempt requires the camper's policy members to each produce a KEL `Rot`, making mass camping economically expensive. See [../../../../protocol-doctrine.md §Anchor Tier Elevation](../../../../protocol-doctrine.md#anchor-tier-elevation).
-- **Inception batch required.** A bare `[Icp]` is rejected at end-verification (`IncompleteInception`). Camping attempts must submit `[Icp, Est_camper]`; the legitimate operator submits `[Icp, Est_operator]`. The SAIDs differ at `Est`, forming a divergent set at v1 which the operator's `Rpr` resolves under the higher-bar `governancePolicy`.
+- **Inception batch required.** A bare `[Icp]` is rejected at end-verification (`IncompleteInception`). Camping attempts must submit `[Icp, Est_camper]`; the legitimate operator submits `[Icp, Est_operator]`.
+- **`Est`-`Est` race at v=1 is mutually destructive.** `Est` is privileged at tier 2; an `Est`-`Est` divergent set fires privileged-divergence-is-terminal at first observation. Neither the camper nor the operator gets a working chain at the contested `(identity, topic)`. Operator recourse against a successful camp is reincept under a new `(identity, topic)` tuple.
 
-The three rules compose: `Icp` permissionless preserves dedup-idempotency on the prefix-deterministic inception; `Est` tier-2 raises per-attempt camping cost; inception batch required closes the "lone `Icp` placeholder" gap. Together they make SEL camping expensive without sacrificing the structural properties (deterministic prefix, dedup-idempotent inception) that the rest of the system depends on.
+The four rules compose: `Icp` permissionless preserves dedup-idempotency on the prefix-deterministic inception; `Est` tier-2 raises per-attempt camping cost; inception batch required closes the "lone `Icp` placeholder" gap; `Est`-`Est` mutual destruction means a successful camp dies along with the operator's attempt, removing any "camper holds the chain" outcome. Together they make SEL camping expensive **and** unprofitable: the camper pays tier-2 cost to deny the operator a tuple they can both abandon.
+
+#### Operator-facing mitigations alongside the structural defense
+
+Race-incept is targeted, not opportunistic — adversaries pay the tier-2 anchor cost only against valuable identities. Defenses below bound the targeting surface and the per-target cost:
+
+- **Well-designed bound IEL policy.** High thresholds, custody separation across distinct domains, and threshold redundancy (`M > N`) raise the cost of an adversary's `Est_camper` to threshold-many tier-2 anchors across independently-held key custodies. The structural defense holds even with a single-KEL IEL; threshold redundancy is what makes it economically prohibitive against high-value targets.
+- **Choose the right primitive for the privacy level you need.** SEL content is replicated through gossip and is structurally readable by anyone who can fetch from any node — treat published SAD content as world-readable. Keep PII out of public SAD content. For private messaging, use [exchange](../../../../features/exchange.md) (ESSR envelopes — end-to-end encrypted, point-to-point, not on a publicly-replicated chain). For SADs that need restricted access, use SAD custody (access controls on the SAD body — the chain event referencing the SAD stays public; the body is access-gated). Reducing the identifying attributes exposed in public chains bounds the adversary's ability to single out a chain as a valuable camping target.
 
 ### `identity` semantics
 
@@ -112,9 +120,9 @@ The same rules apply across all ingestion paths. KELS data is path-agnostic: an 
 For an SEL event at v1+:
 - `ielEvent` references an IEL event in the IEL's authentic chain (`prefix == SEL.identity`).
 - That IEL event resolves to a tracked `authPolicy` (for `Est`/`Upd`) or `governancePolicy` (for `Sea`/`Rpr`/`Dec`) via the IEL's branch state at that event.
-- **The bound IEL event is acceptable iff** the IEL is non-divergent, OR the IEL is divergent AND `bound_event.serial < first_divergent_serial` (the binding lives in the pre-divergence shared portion of the chain). A binding at-or-after `first_divergent_serial` is rejected with `IelDivergent` — the IEL has no single authoritative state at that point.
+- **The bound IEL event is acceptable iff `bound_event.serial <= bound_iel.lastSealAdvancingEvent.serial`.** A binding above the IEL's `lastSealAdvancingEvent` is rejected with `IelDivergent` — events above the seal are not structurally trustworthy as authorization context per [../../../../protocol-doctrine.md §Pre-divergence verifiability survives contestation](../../../../protocol-doctrine.md#pre-divergence-verifiability-survives-contestation). The seal-bound covers the divergent case by construction: on a divergent or contested IEL, the seal stays at the prior linear-portion advance and is strictly below `first_divergent_serial`, so a binding at-or-after the divergent serial is already above the seal and rejected.
 
-  > **Note: chain-validity ≠ consumer trust.** A pre-divergence binding to a contested IEL passes the verifier and stays trust-evaluable for consumer queries — pre-divergence IEL events retain structural verifiability per [../../../../protocol-doctrine.md §Pre-divergence verifiability survives contestation](../../../../protocol-doctrine.md#pre-divergence-verifiability-survives-contestation). The contested IEL is forward-terminal: a SEL that needs to advance its binding past the IEL's divergence point cannot, since post-divergence IEL events are submitter-indistinguishable; that's the case where the operator reincepts the SEL under a new IEL prefix (see [../iel/event-log.md §Effect on Bound SELs](../iel/event-log.md#effect-on-bound-sels)).
+  > **Note: chain-validity ≠ consumer trust.** An at-or-below-seal binding to a contested IEL passes the verifier and stays trust-evaluable for consumer queries — at-or-below-seal IEL events retain structural verifiability per [../../../../protocol-doctrine.md §Pre-divergence verifiability survives contestation](../../../../protocol-doctrine.md#pre-divergence-verifiability-survives-contestation). The contested IEL is forward-terminal: a SEL that needs to advance its binding above the IEL's seal cannot, since above-seal IEL events are not structurally trustworthy; that's the case where the operator reincepts the SEL under a new IEL prefix (see [../iel/event-log.md §Effect on Bound SELs](../iel/event-log.md#effect-on-bound-sels)).
 - SEL.said is anchored under the resolved policy.
 - **Per-event parent-monotonic on `ielEvent`** (SEL-specific): each event's `ielEvent` is at-or-after its parent event's `ielEvent` (parent via `previous` SAID) in IEL chain order, applied per branch independently. No rebinding to stale IEL events on a same-branch extension. Branches with different parent-chains do not constrain each other. KEL and IEL have no analog rule — they resolve authorization from commitments/policy intrinsic to their own chain at the parent event. Within-chain policy variation across SEL branches is bounded by the seal-cap (no fork at-or-before seal) and privileged-divergence-is-terminal (any `Sea`/`Rpr`/`Dec` in the divergent set ends the chain).
 
@@ -135,9 +143,13 @@ The full analysis of what parent-monotonic blocks (and the scenarios it doesn't 
 
 This makes content evolution legible at a glance: scanning the chain, every content change corresponds to an `Est` or `Upd` event; every other kind operates on chain *state* (governance, divergence resolution, terminal lifecycle) without entangling content semantics.
 
-### Evaluation bound
+### Seal-advance cap
 
-`MAX_NON_EVALUATION_EVENTS = MINIMUM_PAGE_SIZE - 1 = 63`. After 63 non-evaluation events (`Icp`, `Est`, `Upd`), the next event must be `Sea` / `Rpr` / `Dec`. This caps an adversary's fork to 63 events before they need to satisfy `governancePolicy` (resolved through IEL).
+The seal-advance cap is `MINIMUM_PAGE_SIZE − 2 = 62`. After 62 non-seal-advancing events (`Icp`, `Upd`), the next event must be a seal-advancing kind (`Est` at v=1; `Sea` / `Rpr` thereafter; `Dec` enforces but does not advance). This caps an adversary's fork to 62 events before they need to satisfy `governancePolicy` (resolved through IEL).
+
+The `− 2` headroom is sized for the worst-case atomic batch — a `[Rpr, Sea]` repair-and-resealing batch fitting in one `MINIMUM_PAGE_SIZE`-bounded page. `MINIMUM_PAGE_SIZE` is a protocol constant, not a per-deployment knob, so batches produced on any conformant node verify on every other conformant node.
+
+The SEL seal-advance cap is structurally symmetric with KEL's seal-advance cap (`MINIMUM_PAGE_SIZE − 2 = 62`, advancing on `Rec`/`Ror`/`Rot`) — both leave 2-slot trailing room for the worst-case atomic recovery/repair batch (`[Rec, Rot]` on KEL; `[Rpr, Sea]` on SEL). See [../kel/events.md §Seal-advance cap](../kel/events.md#seal-advance-cap).
 
 ### Policy immunity (lives on IEL)
 
@@ -178,7 +190,7 @@ The `Rpr` extends v2a (branch-tip-extending shape). Content equals v2a's content
 
 ### Concurrent privileged events producing contested-terminal
 
-Two governance-authorized parties — both satisfying the chain's IEL-resolved `governancePolicy` at `v_{d-1}` — submit concurrent non-archiving privileged events extending the same parent `v_{d-1}` to different nodes. Each event extends `v_{d-1}` and lands at `v_d` on its submitting node. Once gossip merges the two events, the divergent set at `v_d` forms, privileged-divergence-is-terminal fires, and the chain becomes contested-terminal.
+Two governance-authorized parties — both satisfying the chain's IEL-resolved `governancePolicy` at `v_{d-1}` — submit concurrent privileged events extending the same parent `v_{d-1}` to different nodes. Each event extends `v_{d-1}` and lands at `v_d` on its submitting node. Once gossip merges the two events, the divergent set at `v_d` forms, privileged-divergence-is-terminal fires, and the chain becomes contested-terminal.
 
 ```
 v0..v3   normal linear chain

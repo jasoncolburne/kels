@@ -2,9 +2,9 @@
 
 ## System Thesis
 
-Kels is a fail-secure application framework built on **decentralized, tamper-evident, authentic data**. All system state lives in append-only chains of cryptographically-linked events that entities throughout the network hold and verify independently — no central authority, no trust by fiat. Each primitive plays a distinct structural role:
+Kels is a fail-secure application framework built on **decentralized, tamper-evident, authentic data**. System state lives in append-only chains of cryptographically-linked events that entities throughout the network hold and verify independently — no central authority, no trust by fiat. Each primitive plays a distinct structural role:
 
-- **KEL** — anchors authenticity to devices. A device's cryptographic chain of custody; signing a SAID under a KEL `Ixn` proves the device produced or endorsed that data.
+- **KEL** — anchors authenticity to devices. A device's cryptographic chain of custody; signing a SAID under a KEL event proves the device produced or endorsed that data.
 - **IEL** — governs identities. Aggregates devices and other identities into logical groupings via `authPolicy` and `governancePolicy` declarations on its event chain; immunity rules keep past authorizations stable. Identity is the unit at which credentials are issued.
 - **SEL** — content-addressed application data. Identity-rooted chains (each SEL binds at inception to an IEL prefix) carrying domain payloads — exchange-key publications, custody envelopes, etc. Auth resolves through the bound IEL.
 - **Credentials** — verifiable claims that permit access to resources based on authenticated identity. Issued under policies anchored in KELs/IELs; verified by the resource holder against the issuer's chain state.
@@ -19,7 +19,7 @@ For any gap, deviation, or design choice: does it preserve or strengthen tamper-
 
 - **Compromise is permanent — protocol authority is current-state-only.** Authority over a chain belongs only to its currently-tracked state; past keys, past policies, and past endorsers have zero structural ability to act once supplanted. (Example: a KEL signing key rotated out cannot extend the chain even if the adversary still holds it.) See [docs/design/protocol-doctrine.md §Compromise is Permanent](docs/design/protocol-doctrine.md#compromise-is-permanent).
 
-- **Privileged-divergence-is-terminal; universal locking.** A non-archiving privileged event (KEL: `Ror`/`Dec`; SEL: `Sea`/`Dec`; IEL: `Evl`/`Dec`) landing in a non-privileged divergent set transitions the chain to Contested via the upgrade rule. Once any privileged event has landed at `v_d` on a chain, the seal-cap (`parent_serial >= seal_serial`) rejects every subsequent submission whose parent sits in the locked portion — no carve-outs, no boundary cases. Federation races between concurrent privileged submissions do not structurally converge at the protocol layer; convergence is provided at the infrastructure layer (see [#205](https://github.com/jasoncolburne/kels/issues/205)). See [docs/design/protocol-doctrine.md §Privileged Divergence is Terminal](docs/design/protocol-doctrine.md#privileged-divergence-is-terminal) and [§Limit of the doctrine — concurrent privileged event races](docs/design/protocol-doctrine.md#concurrent-privileged-event-races).
+- **Privileged-divergence-is-terminal; universal locking.** A privileged event (KEL: `Ror`/`Dec`; SEL: `Sea`/`Dec`; IEL: `Evl`/`Dec`) landing in a non-privileged divergent set transitions the chain to Contested via the upgrade rule. Once any privileged event has landed at `v_d` on a chain, the seal-cap (`parent_serial >= seal_serial`) rejects every subsequent submission whose parent sits in the locked portion — no carve-outs, no boundary cases. Federation races between concurrent privileged submissions do not structurally converge at the protocol layer; convergence is provided at the infrastructure layer (see [#205](https://github.com/jasoncolburne/kels/issues/205)). See [docs/design/protocol-doctrine.md §Privileged Divergence is Terminal](docs/design/protocol-doctrine.md#privileged-divergence-is-terminal) and [§Limit of the doctrine — concurrent privileged event races](docs/design/protocol-doctrine.md#concurrent-privileged-event-races).
 
 - **Forks are seal-bounded.** A new event's serial must land at-or-after the chain's most-recent privileged-non-terminal event (`lastSealAdvancingEvent`). The bound is protocol-enforced on KEL/SEL via proactive caps; on IEL every non-terminal event advances the seal so there is no post-seal window, and stale-policy hygiene is operator-side via `Evl`. See [docs/design/protocol-doctrine.md §Forks are Seal-Bounded](docs/design/protocol-doctrine.md#forks-are-seal-bounded).
 
@@ -84,13 +84,13 @@ use crate::{handlers::AppState, repository::KelsRepository};
 
 **Key Event Log (KEL)** — append-only chain of key events sharing a prefix. Each event links to the previous via SAID. Forward commitments via `rotationHash = Blake3(next_public_key)`. Recovery/contest/decommission require dual signatures. Delegation trust is NOT verified by the service. See `docs/design/primitives/data/event-logs/kel/events.md`, `docs/design/primitives/data/event-logs/kel/verification.md`, `docs/design/protocol-doctrine.md` §Part 3 (cross-primitive verification doctrine: streaming, tokens, effective-SAID synthetic comparison).
 
-**Divergence** — conflicting events at the same serial. Chain transitions to Divergent (recoverable via `Rec`/`Rpr` when non-privileged) or directly to Contested (terminal — when the divergent set contains a non-archiving privileged event, per privileged-divergence-is-terminal). See `docs/design/primitives/data/event-logs/kel/event-log.md`, `docs/design/primitives/data/event-logs/kel/recovery-workflow.md`, `docs/design/primitives/data/event-logs/kel/reconciliation.md`.
+**Divergence** — conflicting events at the same serial. Chain transitions to Divergent (recoverable via `Rec`/`Rpr` when non-privileged) or directly to Contested (terminal — when the divergent set contains a privileged event, per privileged-divergence-is-terminal). See `docs/design/primitives/data/event-logs/kel/event-log.md`, `docs/design/primitives/data/event-logs/kel/recovery-workflow.md`, `docs/design/primitives/data/event-logs/kel/reconciliation.md`.
 
 **Effective SAID** — tip SAID for normal chains; `hash_effective_said("divergent:{prefix}")` for divergent; `hash_effective_said("contested:{prefix}")` for contested. See `docs/design/primitives/data/event-logs/kel/merge.md`.
 
 **Merge results**: Accepted, Recovered, Contested, Diverged, RecoverRequired, ContestRequired.
 
-**Policy** — DSL for authorization: `endorse(PREFIX)`, `delegate(DELEGATOR, DELEGATE)`, `threshold(MIN, [NODES])`, `weighted(MIN_WEIGHT, [NODE:W])`, `policy(SAID)` nesting; per-policy `poison` / `immune` modes. See `docs/design/features/policy.md`.
+**Policy** — DSL for authorization: `endorse(PREFIX)`, `identity(PREFIX)`, `delegate(DELEGATOR)`, `threshold(MIN, [NODES])`, `weighted(MIN_WEIGHT, [NODE:W])`, `policy(SAID)` nesting; per-policy `poison` / `immune` modes. `delegate(DELEGATOR)` is the open form — the specific delegate is discovered at policy-evaluation time. See `docs/design/features/policy.md`.
 
 **Credentials** — verifiable claims issued under a policy, anchored in KELs. See `docs/design/features/creds.md`.
 
@@ -112,7 +112,7 @@ Storage: `iel_events` table; `/api/v1/iel/events*` routes; `iel_updates` Redis c
 
 See `docs/design/primitives/data/event-logs/iel/events.md`, `docs/design/primitives/data/event-logs/iel/event-log.md`, `docs/design/primitives/data/event-logs/iel/verification.md`, `docs/design/primitives/data/event-logs/iel/merge.md`.
 
-**Custody** — per-SAD-object authority. Inline `custody.write` (IELSaid; one-time anchored write attestation; satisfied at write time) and `custody.read` (IELPrefix; identity-current; resolved through the IEL's current `authPolicy` at read time). Decoupled from `availability` (replication + lifecycle; sibling top-level field). See `docs/design/infrastructure/sadstore.md` and `docs/design/primitives/data/event-logs/iel/event-log.md §Cascading effect on dependent SELs`.
+**Custody** — per-SAD-object authority via two independent flat top-level fields on the SAD wrapper. `ownerIelEvent` (IEL event SAID; one-time anchored write attestation; satisfied at write time, dereferencable for either point-in-time or identity-current verification) and `readPolicy` (policy SAID; evaluated at read time via `evaluate_signed_policy` against the verified prefix set from a `SignedRequest` — composable across identities via `identity(X)`, `threshold`, etc.). Decoupled from `availability` (replication + lifecycle; sibling top-level field). See `docs/design/infrastructure/sadstore.md` and `docs/design/primitives/data/event-logs/iel/event-log.md §Cascading effect on dependent SELs`.
 
 ## Architecture
 

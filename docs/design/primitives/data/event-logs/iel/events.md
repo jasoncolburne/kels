@@ -20,7 +20,7 @@ For chain lifecycle (states, divergence, decommission, evaluation seal), see [ev
 
 - **No `Upd`** — identity chains carry no "content"; the chain's data is its tracked policy state, mutated only via `Evl`.
 - **No `Est`** — both policies are required at `Icp`. Identity chains have structurally unpredictable prefixes (the inception `nonce` makes the derived prefix unguessable from outside), so they don't need the optional-governance-at-Icp dance that SEL uses for camping defense. SEL `Est` provides camping defense for SEL's well-known-tuple prefix; IEL has no analogous surface.
-- **No `Sea`** — every non-terminal IEL event is a governance act (`Icp` declares policy, `Evl` evolves policy). There is no separate "seal advance without policy change" kind; the seal advances on every `Evl` by construction. SEL `Sea` exists for distinct reasons (proactive-evaluation cap on SEL chains); IEL has no analogous need.
+- **No `Sea`** — every non-terminal IEL event is a governance act (`Icp` declares policy, `Evl` evolves policy). There is no separate "seal advance without policy change" kind; the seal advances on every `Evl` by construction. SEL `Sea` exists for distinct reasons (the seal-advance cap on SEL chains); IEL has no analogous need.
 - **No `Rpr`** — divergence on IEL is immediately terminal (every IEL event is privileged, so any divergent set fires the privileged-divergence-is-terminal rule). There's no "preserve one branch, archive the other" shape because the protocol cannot adjudicate from chain data when both branches are governance-authorized. See [event-log.md §Divergence is Contested-Terminal](event-log.md#divergence-is-contested-terminal) for the structural argument and [event-log.md §Operator recourse against compromise](event-log.md#operator-recourse-against-compromise) for the recourse paths.
 
 ## Per-Kind Field Rules
@@ -117,7 +117,7 @@ IEL events do not carry content. The chain's "data" is its tracked policy state,
 
 ### Evaluation bound — not applicable
 
-SEL has `MAX_NON_EVALUATION_EVENTS = 63` to bound how long an adversary can fork before satisfying governancePolicy. On IEL, **every event is governance-authorized** (`Icp`, `Evl`, `Dec`). There are no "non-evaluation events" between governance evaluations — every event IS governance-authorized at submission time. The bound is implicit and need not be enforced.
+SEL has a seal-advance cap (`MINIMUM_PAGE_SIZE − 2 = 62`) to bound how long an adversary can fork before satisfying governancePolicy. On IEL, **every event is governance-authorized** (`Icp`, `Evl`, `Dec`). There are no non-seal-advancing events between governance evaluations — every event IS governance-authorized at submission time. The cap is implicit and need not be enforced.
 
 (`lastSealAdvancingEvent` advances on `Evl` — Icp/Dec do not advance the seal — but the governance authorization gate applies uniformly at all kinds. Only one Icp can land per chain, so the chain has at most one pre-Evl event.)
 

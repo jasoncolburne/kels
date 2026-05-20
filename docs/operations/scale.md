@@ -19,16 +19,16 @@ Scale in kels is structural, not protocol. A fail-secure decentralized framework
 
 ## Federation membership as identity-rooted SEL
 
-- Federation IEL declares `auth_policy` (admit) and `governance_policy` (evict/contest).
+- Federation IEL declares `authPolicy` (admit) and `governancePolicy` (evict / contested-terminal).
 - Peer admission: SEL `Icp` / `Upd` on the federation chain, content = peer record (KEL prefix, base_domain, gossip_addr, role).
-- Eviction: SEL `Dec`. Adversarial: `Cnt`.
-- Concurrent admit races resolve through the same divergence/contest machinery as other SELs.
+- Eviction: SEL `Dec`. Adversarial: contested-terminal via privileged-divergence-is-terminal — any privileged event landing in a divergent set fires the rule; there is no dedicated `Cnt`/contest event.
+- Concurrent admit races resolve through the same divergence / contested-terminal machinery as other SELs.
 - Discovery: a node bootstraps from the federation IEL prefix and walks the SEL to learn the membership graph.
 
 ### What this buys vs Raft
 
 - No leader election, no quorum dance.
-- Fork-of-authority is first-class — two admin factions disagreeing on a peer manifest as divergence and resolve through `Cnt`.
+- Fork-of-authority is first-class — two admin factions disagreeing on a peer manifest as divergence and (when a privileged event lands in the divergent set) resolve via contested-terminal via privileged-divergence-is-terminal.
 - Federations compose. A node can be a member of multiple federations by following multiple SELs; with Raft, each registry is its own world.
 
 ### What it costs

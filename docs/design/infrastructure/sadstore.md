@@ -108,7 +108,7 @@ Used for credential issuance and endorsement verification. Evaluates a policy ag
 
 - Checks KEL anchors: each endorser must have anchored the credential SAID in their KEL via an `ixn` event
 - Supports `Endorse`, `Weighted`, `Delegate`, and `Policy` (nested) nodes
-- `Delegate(delegator, delegate)` verifies the delegation chain: the delegate's KEL must have been incepted via `dip` with the delegator, and the delegator must anchor the delegate's prefix. This supports scaling credential issuance via delegation chains (#77 — delegated signing servers with sub-delegation to minimize KEL length)
+- `delegate(delegator)` verifies the delegation chain: some KEL X must have been incepted via `dip` with `delegator` as the delegating prefix, and the delegator must anchor X's prefix; X then anchors the credential SAID. The specific delegate is discovered at evaluation time — the single-arg open form is what makes the indirection useful (the delegator can rotate their delegate fleet without changing referencing policies). Supports scaling credential issuance via delegation chains (#77 — delegated signing servers with sub-delegation to minimize KEL length)
 - Poison checks: endorsers can withdraw endorsement by anchoring a poison hash; configurable via `poison` expression or `immune` flag
 
 ### `evaluate_signed_policy` — Access Control Context (`readPolicy` enforcement)
