@@ -125,7 +125,7 @@ KelVerification:
     branch_tips: Vec<BranchTip>                     // one per branch (1 = linear, N = divergent)
     is_contested: bool
     divergenceAncestor: Option<Digest256>          // SAID of v_{d-1} on a divergent chain (None on linear)
-    lastSealAdvancingEvent: Option<Digest256>     // SAID of most recent Rec/Ror/Rot (seal-cap watermark)
+    lastSealAdvancingEvent: Option<Digest256>     // SAID of most recent Rec/Ror/Rot that landed cleanly on the linear chain (seal-cap watermark); a priv event creating or joining a divergent set does NOT advance the seal
     lastRecoveryRevealingEvent: Option<Digest256> // SAID of most recent Rec/Ror/Dec (spent-key + Ror cap)
     anchored_saids: BTreeSet<Digest256>
     queried_saids: BTreeSet<Digest256>

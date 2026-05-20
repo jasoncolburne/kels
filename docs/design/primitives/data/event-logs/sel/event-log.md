@@ -19,7 +19,7 @@ State is computed from the chain's events, never tracked as a separate flag. The
 - `divergenceAncestor: Option<Digest256>` — SAID of `v_{d-1}` on a divergent chain (`None` on linear).
 - `is_contested: bool` — true iff divergent AND the divergent set contains a privileged event (`Est` at v=1, `Sea`, or `Dec`).
 - `is_decommissioned: bool` — any `Dec` event in a linear chain (Dec landing in a divergent set produces Contested, not Decommissioned).
-- `lastSealAdvancingEvent: Option<Digest256>` — SAID of the most recent `Sea`/`Rpr` (the "evaluation seal").
+- `lastSealAdvancingEvent: Option<Digest256>` — SAID of the most recent `Est` (at v=1) / `Sea` / `Rpr` that landed cleanly on the linear chain (the "evaluation seal"). **A privileged event creating or joining a divergent set does NOT advance the seal** — the protocol cannot identify a canonical submitter, so the seal stays at the prior linear-portion advance.
 - `lastIelEvent: Option<Digest256>` — derived aggregate: the highest IEL event (in IEL chain order) that any SEL event in the chain has bound to. Computed across all events; not used as a watermark gate. New event acceptance is gated by per-event parent-monotonic on `ielEvent`, applied per branch (see [verification.md](verification.md) and [../iel/event-log.md §What parent-monotonic blocks](../iel/event-log.md#what-parent-monotonic-blocks-and-what-it-doesnt)).
 
 ## Event Kinds

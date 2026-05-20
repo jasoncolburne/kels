@@ -330,10 +330,10 @@ trait IelResolver: Send + Sync {
 
     /// SAID-keyed direct lookup against `IelVerification::policy_history`
     /// (carry-forward already applied at IEL verification time — no chain
-    /// walk here). Returns IelDivergent when the bound event lives at-or-
-    /// above the IEL's `lastSealAdvancingEvent` or at-or-after its
-    /// `first_divergent_serial`; events at-or-below the seal and below
-    /// the divergent serial resolve cleanly even on a divergent IEL.
+    /// walk here). Returns IelDivergent when the bound event lives above
+    /// the IEL's `lastSealAdvancingEvent`; events at-or-below the seal
+    /// resolve cleanly even on a divergent IEL (the seal stays at the
+    /// prior linear-portion advance on a contested chain by construction).
     async fn resolve_auth_policy_at(&self, identity: &Digest256, iel_event_said: &Digest256)
         -> Result<Digest256, KelsError>;
     async fn resolve_governance_policy_at(&self, identity: &Digest256, iel_event_said: &Digest256)

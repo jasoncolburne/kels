@@ -384,8 +384,9 @@ Dependent SEL trying to extend:
   Submitter tries with at-or-below-seal pre-divergence binding:
     [Upd_v_new, ielEvent=Evl_{d-1}.said]   ← bound at v_{d-1}, also ≤ seal
 
-  IEL resolver: "bound event at-or-below seal AND below divergent serial"
-   → chain-validity and consumer trust both OK on the binding (see
+  IEL resolver: "bound event at-or-below seal" (seal is below divergent
+   serial by construction) → chain-validity and consumer trust both OK on
+   the binding (see
    ../iel/event-log.md §Effect on Bound SELs and
    ../../../../protocol-doctrine.md §Pre-divergence verifiability survives
    contestation). The SEL stays trust-evaluable against the at-or-below-seal

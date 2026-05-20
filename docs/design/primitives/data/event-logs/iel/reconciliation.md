@@ -170,14 +170,15 @@ SEL chain bound to the IEL (last good at-or-below-seal binding):
   Submitter retries with stable at-or-below-seal binding:
     [Upd_v_new, ielEvent=Evl_{d-1}.said]   ← bound at v_{d-1} ≤ seal, < d
 
-  IEL resolver: "bound event at-or-below seal AND below divergent serial"
-   → OK for chain-validity, and consumer trust remains intact for the
-   at-or-below-seal binding per protocol-doctrine.md §Pre-divergence
-   verifiability survives contestation. Forward extension that would bind
-   to an above-seal IEL event is what's blocked.
+  IEL resolver: "bound event at-or-below seal" (seal is below divergent
+   serial by construction) → OK for chain-validity, and consumer trust
+   remains intact for the at-or-below-seal binding per
+   protocol-doctrine.md §Pre-divergence verifiability survives
+   contestation. Forward extension that would bind to an above-seal IEL
+   event is what's blocked.
 ```
 
-Bindings at-or-below `lastSealAdvancingEvent` AND strictly less than `first_divergent_serial` resolve cleanly (the at-or-below-seal portion is structurally trustworthy). Bindings above the seal — whether in the seal-to-divergence gap or at-or-above the divergent serial — are rejected as `IelDivergent`. SEL operator's recovery path: contest the SEL or migrate to a different IEL.
+Bindings at-or-below `lastSealAdvancingEvent` resolve cleanly (the at-or-below-seal portion is structurally trustworthy). The seal-bound covers the divergent case by construction — on a divergent or contested IEL the seal stays at the prior linear-portion advance, strictly below `first_divergent_serial`. Bindings above the seal are rejected as `IelDivergent`. SEL operator's recovery path: contest the SEL or migrate to a different IEL.
 
 ### 4. Multiple adversary injections to different nodes
 

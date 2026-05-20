@@ -17,7 +17,7 @@ State is computed from the chain's events, never tracked as a separate flag. The
 - `divergenceAncestor: Option<Digest256>` — SAID of `v_{d-1}` (the unique parent of all events at `v_d`) on a divergent chain, or `None` if linear.
 - `is_contested: bool` — `true` iff divergent AND the divergent set contains a privileged event (`Rot`, `Ror`, or `Dec`).
 - `is_decommissioned: bool` — `Dec` event in a linear chain (Dec landing in a divergent set produces contested, not decommissioned).
-- `lastSealAdvancingEvent: Option<Digest256>` — SAID of the most recent `Rec`/`Ror`/`Rot`. The chain's seal-cap watermark (see §Seal and Key Non-Poisonability).
+- `lastSealAdvancingEvent: Option<Digest256>` — SAID of the most recent `Rec`/`Ror`/`Rot` that landed cleanly on the linear chain. **A privileged event creating or joining a divergent set does NOT advance the seal** — the protocol cannot identify a canonical submitter, so the seal stays at the prior linear-portion advance. The chain's seal-cap watermark (see §Seal and Key Immunity).
 - `lastRecoveryRevealingEvent: Option<Digest256>` — SAID of the most recent `Rec`/`Ror`/`Dec`. Tracks recovery-key revelation for the spent-key / immunity rule and the Ror cap; orthogonal to the seal (`Rot` advances the seal without revealing the recovery key; `Dec` reveals the recovery key without advancing the seal).
 
 ## Event Kinds
