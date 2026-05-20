@@ -5,7 +5,7 @@ This doc describes the operator-side CLI workflow for KEL `Rec` / `Ror` / `Dec` 
 For the chain-state semantics each ceremony reaches, see the design docs:
 
 - What `Rec` archives → [event-log.md §Recovery (Rec)](event-log.md#recovery-rec).
-- How a chain transitions to Contested → [event-log.md §Contested-state transitions](event-log.md#contested-state-transitions).
+- How the merge layer rejects privileged events that would create or join a divergent set → [event-log.md §Privileged-event merge-layer rejection](event-log.md#privileged-event-merge-layer-rejection).
 - The seal-cap and spent-key rule → [event-log.md §Seal and Key Immunity](event-log.md#seal-and-key-immunity).
 
 ## Architecture

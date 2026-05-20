@@ -122,10 +122,9 @@ verify_signatures(signed_event, publicKey):
 ```
 KelVerification:
     prefix: String
-    branch_tips: Vec<BranchTip>                     // one per branch (1 = linear, N = divergent)
-    is_contested: bool
+    branch_tips: Vec<BranchTip>                     // one per branch (1 = linear, 2 = divergent)
     divergenceAncestor: Option<Digest256>          // SAID of v_{d-1} on a divergent chain (None on linear)
-    lastSealAdvancingEvent: Option<Digest256>     // SAID of most recent Rec/Ror/Rot that landed cleanly on the linear chain (seal-cap watermark); a priv event creating or joining a divergent set does NOT advance the seal
+    lastSealAdvancingEvent: Option<Digest256>     // SAID of most recent Rec/Ror/Rot that landed cleanly on the linear chain (seal-cap watermark). The seal never forks: privileged events that would create or join a divergent set are rejected at the merge layer per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal).
     lastRecoveryRevealingEvent: Option<Digest256> // SAID of most recent Rec/Ror/Dec (spent-key / immunity rule; rotation cadence is operator guidance)
     anchored_saids: BTreeSet<Digest256>
     queried_saids: BTreeSet<Digest256>
@@ -138,9 +137,9 @@ BranchTip:
 Derived accessors:
 - `current_public_key()` → `None` if divergent (ambiguous)
 - `last_establishment_event()` → `None` if divergent
-- `is_decommissioned()` → `true` when the linear branch tip is a `Dec` event (a contested chain is not also decommissioned — when `Dec` lands in a divergent set the chain transitions directly to Contested via privileged-divergence-is-terminal)
+- `is_decommissioned()` → `true` when the linear branch tip is a `Dec` event (`Dec` whose landing would create or join a divergent set is rejected at merge per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal))
 - `is_divergent()` → `branch_tips.len() > 1`
-- `effective_tail_said()` → single tip SAID, `hash("contested:{prefix}")` for contested, `hash("divergent:{prefix}")` for divergent
+- `effective_tail_said()` → single tip SAID, or `hash("divergent:{prefix}")` for divergent
 - `is_said_anchored()`, `anchors_all_saids()` → inline anchor checking results
 
 ## Key Properties Verified
@@ -168,31 +167,19 @@ Verification does NOT fail on divergence. Instead:
 ### Terminal-state determination
 
 The verifier's terminal-state-determination rule simplifies to:
-- Divergent at `v_d`?
-  - No → linear (active or terminal-via-Dec).
-  - Yes → divergent set contains a privileged event (`Rot`, `Ror`, or `Dec`)?
-    - Yes → contested (terminal).
-    - No → divergent (recoverable via `Rec`).
+- Divergent at `v_d`? (a divergent set exists in the chain data; on KEL only non-privileged `Ixn`-`Ixn` divergent sets can form, per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal))
+  - Yes → Divergent (recoverable via `Rec`).
+  - No → Linear (Active, or Decommissioned via `Dec`).
 
 (`Rec` is archiving — its discriminator removes the divergent set before any divergent-set check fires, so `Rec` never appears in the divergent set at terminal-state-determination time.)
 
-### Contested-state transition: privileged event placement
-
-A privileged event (`Rot`, `Ror`, or `Dec`) with `previous = v_{d-1}.said` and `serial = d` lands at `v_d` and joins or creates the divergent set, firing privileged-divergence-is-terminal. The locked-portion bound prevents `previous` from being in the chain's locked portion; on KEL the seal-cap enforces this. See [../../../../protocol-doctrine.md §Worked scenarios — contested-state creation](../../../../protocol-doctrine.md#worked-scenarios--contested-state-creation) for the cross-shape derivation and diagrams. `v_{d-1}` is the unique parent at `serial − 1` shared across all nodes by chain validity (it lands cleanly before any divergence), making the parent shape cross-node-validatable regardless of which divergent contents each node observed.
-
-**Implementation note.** The contesting event is processed inline with the chain walk. When the walk reaches `v_d`, branch state holds `v_{d-1}`'s commitments (`rotationHash` and `recoveryHash`, set when `v_{d-1}` was processed and not yet consumed by `v_d`'s establishment update). The contesting event and the existing event(s) at `v_d` are processed as siblings of the same generation, both consuming `v_{d-1}`'s commitments — `Rot` via single-signature against `rotationHash`; `Ror`/`Dec` via dual-signature against both `rotationHash` and `recoveryHash`. No new cache slot in branch state.
-
-### Upgrade rule
-
-When a node has a non-privileged divergent set at `v_d` (max 2 events: `Ixn`-`Ixn` race) and gossip delivers a privileged event for that same `v_d` (`Rot`, `Ror`, or `Dec` with `previous = v_{d-1}.said`), the verifier accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal).
-
-`Rec` is the archiving exception — its discriminator removes the divergent set before any divergent-set check fires, so it never participates in the upgrade rule. See [../../../../protocol-doctrine.md §Routing semantics of privileged and archiving kinds](../../../../protocol-doctrine.md#routing-semantics-of-privileged-and-archiving-kinds) for the doctrinal frame.
-
-### Contested-event authorization (HARD)
+### Privileged-event authorization (HARD at merge)
 
 > **Verifier vs merge-engine semantics.** The verifier itself does not reject events — it records signature-check results on the verification token and surfaces authorization failures via `policy_satisfied = false` (plus per-kind indicators where applicable). "HARD" below refers to **merge-engine enforcement against the verifier's output**: when the submit handler runs the verifier and observes an auth failure, the merge engine rejects the candidate batch and the new events never land. The verifier-side soft-fail composition is documented in [../../../../protocol-doctrine.md §Verifier and merge are distinct treatments](../../../../protocol-doctrine.md#verifier-and-merge-are-distinct-treatments).
 
-The contesting privileged event's authorization is verified against `v_{d-1}`'s commitments — `Rot` via single-signature against `rotationHash`; `Ror`/`Dec` via dual-signature against `rotationHash` AND `recoveryHash`. Authorization failure is HARD at the merge layer — a contesting event whose signatures don't verify is rejected by the merge engine on the verifier's output; the chain stays at its prior state. Per-kind signature shape is documented in [events.md §Authorization model](events.md#authorization-model); the HARD-at-the-merge-layer rule applies uniformly to all privileged kinds.
+A privileged event's authorization is verified against its parent's commitments — `Rot` via single-signature against `rotationHash`; `Ror`/`Dec` via dual-signature against `rotationHash` AND `recoveryHash`. Authorization failure is HARD at the merge layer — an event whose signatures don't verify is rejected by the merge engine on the verifier's output; the chain stays at its prior state. Per-kind signature shape is documented in [events.md §Authorization model](events.md#authorization-model); the HARD-at-the-merge-layer rule applies uniformly to all privileged kinds.
+
+Privileged events whose landing would create or join a divergent set are rejected at the merge layer separately from the auth check — see [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). The verifier records the divergent-set composition; the merge engine's fork-detect step applies the priv-divergence rule. Federation-level priv-vs-priv races are surfaced via the contested-prefix table — see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races).
 
 ## Event Types and Their Signatures
 
@@ -222,7 +209,6 @@ struct KelVerifier {
     branches: HashMap<String, BranchState>,  // keyed by tip SAID
     last_verified_serial: Option<u64>,
     divergenceAncestor: Option<Digest256>,
-    is_contested: bool,
     queried_saids: BTreeSet<String>,   // anchor checking
     anchored_saids: BTreeSet<String>,  // anchor checking
 }
