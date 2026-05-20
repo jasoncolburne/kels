@@ -4,7 +4,7 @@ How operators of IEL chains with multi-party governance prevent accidental diver
 
 ## The race
 
-For IEL chains with multi-party governance — an `auth_policy` or `governance_policy` that multiple parties can satisfy — races between concurrent submissions create divergence even when all parties are legitimately authorized. Two operators independently signing and submitting `Evl` events without coordination produces two events at the same serial: divergence on IEL → contested-terminal immediately (every IEL event is privileged, so any divergent set on IEL fires the privileged-divergence rule — see [../design/protocol-doctrine.md §Privileged Divergence is Terminal](../design/protocol-doctrine.md#privileged-divergence-is-terminal)).
+For IEL chains with multi-party governance — an `authPolicy` or `governancePolicy` that multiple parties can satisfy — races between concurrent submissions create divergence even when all parties are legitimately authorized. Two operators independently signing and submitting `Evl` events without coordination produces two events at the same serial: divergence on IEL → contested-terminal immediately (every IEL event is privileged, so any divergent set on IEL fires the privileged-divergence rule — see [../design/protocol-doctrine.md §Privileged Divergence is Terminal](../design/protocol-doctrine.md#privileged-divergence-is-terminal)).
 
 ## Why this is load-bearing for high-stakes identities
 

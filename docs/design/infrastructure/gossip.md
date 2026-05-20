@@ -196,7 +196,7 @@ The gossip protocol is TCP-based. Each peer publishes its advertised gossip endp
 
 Production deployments must ensure each peer's advertised endpoint is reachable from every other peer in the federation — by whatever mechanism the deployment provides (public IPs, mesh routing, NAT traversal, LoadBalancer / NodePort / Gateway API TCPRoute in Kubernetes, etc.). The endpoint published in the address SEL must be the externally-routable one, not a local-only address; the gossip service surfaces this via `GOSSIP_ADVERTISE_ADDR`.
 
-The in-repo Kubernetes test harness (see [`../../validation/k8s-test-harness.md`](../../validation/k8s-test-harness.md)) configures cross-namespace TCP via ClusterIP services and CoreDNS rewrites inside a single cluster. That is a test setup, not a production deployment recipe.
+The in-repo Kubernetes test harness (see [`../../development/validation/k8s-test-harness.md`](../../development/validation/k8s-test-harness.md)) configures cross-namespace TCP via ClusterIP services and CoreDNS rewrites inside a single cluster. That is a test setup, not a production deployment recipe.
 
 ## Anti-Entropy Repair
 

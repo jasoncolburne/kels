@@ -20,7 +20,7 @@ For chain lifecycle (states, divergence, recovery via discriminator, decommissio
 
 ## Per-Kind Field Rules
 
-`KeyEvent::validate_structure()` enforces these. The verifier and merge engine add chain-state checks on top (e.g., seal-advance and Ror cap enforcement; dual-signature verification against prior establishment commitments).
+`KeyEvent::validate_structure()` enforces these. The verifier and merge engine add chain-state checks on top (e.g., seal-advance cap enforcement; dual-signature verification against prior establishment commitments).
 
 ### Structural fields
 
@@ -34,7 +34,7 @@ For chain lifecycle (states, divergence, recovery via discriminator, decommissio
 | `Rec` | `>= 1` | required | **required** | **required** | **required** | **required** | forbidden |
 | `Dec` | `>= 1` | required | **required** | forbidden | **required** | forbidden | forbidden |
 
-The forward-key commitment fields (`rotationHash`, `recoveryKey`, `recoveryHash`) drive the dual-signature mechanic; see §Forward-key commitments below. `delegatingPrefix` is `Dip`-only and supports the `Delegated(delegator)` policy node (see §Authorization model).
+The forward-key commitment fields (`rotationHash`, `recoveryKey`, `recoveryHash`) drive the dual-signature mechanic; see §Forward-key commitments below. `delegatingPrefix` is `Dip`-only and supports the `delegate(delegator)` policy node (see §Authorization model).
 
 ### Authorization, anchor, and routing
 
@@ -55,16 +55,16 @@ The `anchor` field (when present) carries the SAID of an IEL/SEL event being anc
 The "authorization" column names which signature(s) the verifier requires for the event to be accepted:
 
 - **Icp** must be signed by the private counterpart of the `publicKey` it declares. The verifier recomputes the prefix from the inception template (which includes `publicKey`, `rotationHash`, `recoveryHash`), confirms it matches `event.prefix`, then verifies the event's "signing" signature against `publicKey`. Icp's SAID + prefix derivation provides chain identity; the signature against the declared key is the authorization. Subsequent v1+ events satisfy what Icp committed (`rotationHash` for the next signing key, `recoveryHash` for the recovery key).
-- **Dip** has the same submit-time authorization as Icp (signed by the declared `publicKey`). The Dip-specific delegation surface is detailed in §Dip delegation below.
+- **Dip** has the same submit-time authorization as Icp (signed by the declared `publicKey`). The Dip-specific delegation surface (`delegate(delegator)` policy node) is detailed in §Dip delegation below.
 - **Rot** is signed by the new `publicKey` it reveals. The verifier checks `Blake3(publicKey) == prev_establishment.rotationHash`, then verifies the signature against `publicKey`. `rotationHash` on `Rot` commits the *next* rotation key.
 - **Ixn** is signed by the current active signing key — the `publicKey` of the most recent establishment event in the chain (Icp / Dip / Rot / Rec / Ror).
 - **Rec / Ror / Dec** are dual-signed. The "signing" signature is by the key revealed in `publicKey` (preimage of the prior establishment's `rotationHash`); the "recovery" signature is by the key revealed in `recoveryKey` (preimage of the prior establishment's `recoveryHash`). Both signatures must verify, and both digest commitments must match. This is the privileged primitive — exercising both the rotation key and the recovery key together proves dual control.
 
 ### Dip delegation
 
-`Dip` declares a `delegatingPrefix`, captured into the verification token but not checked at submit time. The delegation relationship is verified at **policy-evaluation time** via the `Delegated(delegator)` policy node: any KEL with `delegatingPrefix == delegator` that the delegator anchors (via an `ixn` in the delegator's KEL) satisfies the node.
+`Dip` declares a `delegatingPrefix`, captured into the verification token but not checked at submit time. The delegation relationship is verified at **policy-evaluation time** via the `delegate(delegator)` policy node: any KEL with `delegatingPrefix == delegator` that the delegator anchors (via an `ixn` in the delegator's KEL) satisfies the node.
 
-The single-arg open form (`Delegated(delegator)`, not `Delegated(delegator, delegate)`) is what makes the indirection useful — the delegator can rotate their delegate fleet (decommission, replace, add) without changing any policy that references them. See [../../../../features/policy.md](../../../../features/policy.md) for `Delegated(delegator)` resolution.
+The single-arg open form (`delegate(delegator)`, not `delegate(delegator, delegate)`) is what makes the indirection useful — the delegator can rotate their delegate fleet (decommission, replace, add) without changing any policy that references them. See [../../../../features/policy.md](../../../../features/policy.md) for `delegate(delegator)` resolution.
 
 ### Anchor on Rot and Ror
 
@@ -80,7 +80,7 @@ Anchors on `Rot` and `Ror` are structurally durable against `Rec` archival — b
 
 `Rec` / `Ror` / `Dec` reveal the `recoveryKey` field. Once revealed in any event on the chain, that recovery key is "spent" — future divergent events cannot be resolved via `Rec` against the spent key. After recovery-key revelation, contested-termination via a privileged event (`Rot`, `Ror`, or `Dec`) landing in a divergent set is the only protocol path that ends the chain.
 
-`Ror` is the proactive form: the chain holder rotates both keys ahead of the Ror cap (no divergence required), revoking any future divergent recovery a second party could attempt with the now-stale key material.
+`Ror` is the proactive form: the chain holder rotates both keys (no divergence required), revoking any future divergent recovery a second party could attempt with the now-stale key material. Cadence is operator guidance — see §Cap doctrine below.
 
 ### Forward-key commitments
 
@@ -96,17 +96,15 @@ Establishment events (every kind except `Ixn`) commit one or both forward-key di
 
 The verifier seeds `tracked_rotation_hash` / `tracked_recovery_hash` from inception and updates them on each establishment event. Future revelations are checked against the tracked digest.
 
-### Two parallel caps
+### Cap doctrine
 
-KEL has two caps with different membership sets, running in parallel. Each bounds a distinct property; both are protocol-fixed for cross-deployment interop.
+KEL has one protocol-enforced cap (the seal-advance cap) plus operator guidance on recovery-preimage rotation cadence.
 
-**Seal-advance cap.** A seal-advancing event (`Rec`, `Ror`, or `Rot`) must land every `MINIMUM_PAGE_SIZE − 2 = 62` non-seal-advancing events. The cap bounds the chain-state advance: divergence on a chain since the last seal-advancing event is capped at 62 events on either branch, so the discriminator's archival window fits in one page. The `− 2` headroom accommodates a `[Rec, Rot]` recovery batch fitting in one `MINIMUM_PAGE_SIZE`-bounded page on every conformant deployment — `MINIMUM_PAGE_SIZE` is a protocol constant, not a per-deployment knob, so a recovery batch produced on any node verifies on every other node. See [../../../../protocol-doctrine.md §Forks are Seal-Bounded](../../../../protocol-doctrine.md#forks-are-seal-bounded).
+**Seal-advance cap (protocol-enforced).** A seal-advancing event (`Rec`, `Ror`, or `Rot`) must land every `MINIMUM_PAGE_SIZE − 2 = 62` non-seal-advancing events. The cap bounds the chain-state advance: divergence on a chain since the last seal-advancing event is capped at 62 events on either branch, so the discriminator's archival window fits in one page. The `− 2` headroom accommodates an atomic 2-event lifecycle batch — `[Rec, Rot]` (recovery followed by the optional rotation catch-up when the archived branch had rotated past the surviving one) is the KEL worst-case shape — fitting in one `MINIMUM_PAGE_SIZE`-bounded page on every conformant deployment. `MINIMUM_PAGE_SIZE` is a protocol constant, not a per-deployment knob, so a recovery batch produced on any node verifies on every other node. See [../../../../protocol-doctrine.md §Forks are Seal-Bounded](../../../../protocol-doctrine.md#forks-are-seal-bounded).
 
-**Ror cap.** A recovery-revealing event (`Rec`, `Ror`, or `Dec`) must land every 512 events. The cap bounds recovery-key-preimage staleness — prevents pure-`Rot`-forever operators from running indefinitely on an aging recovery commitment. The Ror cap is also protocol-fixed at 512 events (cross-deployment interop: if deployments diverged on the cap value, chains produced under a looser cap wouldn't verify on stricter ones). KEL-specific: SEL has no independent recovery-key concept.
+**Recovery-preimage rotation (operator guidance).** Operators SHOULD rotate the recovery-key preimage commitment via `Ror` periodically. Cadence depends on the operator's threat model, custody setup (cold storage vs HSM-resident), and acceptable preimage-staleness exposure; the protocol does not enforce a specific number. Recovery keys are typically hardware-held and preimage-identified rather than usage-degraded, so protocol-forced periodic rotation would impose access on cold-stored or separated-custody recovery keys on a fixed schedule, creating exposure windows the operator's threat model is designed to minimize. SEL has no independent recovery-key concept; the rotation-cadence guidance is KEL-specific.
 
-The two caps' membership sets diverge in two cells: `Rot` advances the seal without being recovery-revealing; `Dec` is recovery-revealing without advancing the seal (terminal, enforces but does not advance). The orthogonality is the structural property that lets the protocol bound chain-state and recovery-preimage staleness independently.
-
-**Adversary bound.** Together the two caps cap an adversary's fork to 62 events before they need to satisfy a seal-advancing primitive — which requires at least the rotation-key preimage (for `Rot`) or the recovery-key preimage (for `Rec`/`Ror`). Builder policy: when an `ixn` would exceed the seal-advance cap, auto-insert `Rot` (cheaper; no recovery-preimage advance) unless the Ror cap is also approaching, in which case auto-insert `Ror`.
+**Adversary bound.** The seal-advance cap bounds an adversary's fork at 62 events before they need to satisfy a seal-advancing primitive — which requires at least the rotation-key preimage (for `Rot`) or the recovery-key preimage (for `Rec`/`Ror`). Builder policy: when an `ixn` would exceed the seal-advance cap, auto-insert `Rot` (cheaper; no recovery-preimage advance) or `Ror` per the operator's recovery-preimage rotation cadence guidance above.
 
 The seal-advance cap is the structural analog of SEL's evaluation seal — see [../sel/events.md §Evaluation bound](../sel/events.md#evaluation-bound).
 
@@ -124,7 +122,7 @@ s62 kind=ror  publicKey=kN, recoveryKey=r0,         ← proactive recovery-rotat
     rotationHash=h(kN+1), recoveryHash=h(r1)
 ```
 
-`Ror` at s62 keeps the chain inside the seal-advance cap (and also advances the Ror cap counter). A `Rot` at s62 would also satisfy the seal-advance cap; an operator who wants to keep the recovery commitment fresh chooses `Ror`.
+`Ror` at s62 keeps the chain inside the seal-advance cap. A `Rot` at s62 would also satisfy the seal-advance cap; an operator who wants to refresh the recovery-key preimage commitment chooses `Ror` per their operator-guidance cadence (see §Cap doctrine).
 
 ### Delegated inception
 

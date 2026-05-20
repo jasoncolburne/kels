@@ -126,7 +126,7 @@ KelVerification:
     is_contested: bool
     divergenceAncestor: Option<Digest256>          // SAID of v_{d-1} on a divergent chain (None on linear)
     lastSealAdvancingEvent: Option<Digest256>     // SAID of most recent Rec/Ror/Rot that landed cleanly on the linear chain (seal-cap watermark); a priv event creating or joining a divergent set does NOT advance the seal
-    lastRecoveryRevealingEvent: Option<Digest256> // SAID of most recent Rec/Ror/Dec (spent-key + Ror cap)
+    lastRecoveryRevealingEvent: Option<Digest256> // SAID of most recent Rec/Ror/Dec (spent-key / immunity rule; rotation cadence is operator guidance)
     anchored_saids: BTreeSet<Digest256>
     queried_saids: BTreeSet<Digest256>
 
@@ -186,11 +186,13 @@ A privileged event (`Rot`, `Ror`, or `Dec`) with `previous = v_{d-1}.said` and `
 
 When a node has a non-privileged divergent set at `v_d` (max 2 events: `Ixn`-`Ixn` race) and gossip delivers a privileged event for that same `v_d` (`Rot`, `Ror`, or `Dec` with `previous = v_{d-1}.said`), the verifier accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal).
 
-`Rec` is the archiving exception — its discriminator removes the divergent set before any divergent-set check fires, so it never participates in the upgrade rule. See [../../../../protocol-doctrine.md §Privileged and archiving event classes](../../../../protocol-doctrine.md#privileged-and-archiving-event-classes) for the doctrinal frame.
+`Rec` is the archiving exception — its discriminator removes the divergent set before any divergent-set check fires, so it never participates in the upgrade rule. See [../../../../protocol-doctrine.md §Routing semantics of privileged and archiving kinds](../../../../protocol-doctrine.md#routing-semantics-of-privileged-and-archiving-kinds) for the doctrinal frame.
 
 ### Contested-event authorization (HARD)
 
-The contesting privileged event's authorization is verified against `v_{d-1}`'s commitments — `Rot` via single-signature against `rotationHash`; `Ror`/`Dec` via dual-signature against `rotationHash` AND `recoveryHash`. Authorization failure is HARD — a contesting event whose signatures don't verify is rejected by the verifier; the chain stays at its prior state. Per-kind signature shape is documented in [events.md §Authorization model](events.md#authorization-model); the HARD-at-the-merge-layer rule applies uniformly to all privileged kinds.
+> **Verifier vs merge-engine semantics.** The verifier itself does not reject events — it records signature-check results on the verification token and surfaces authorization failures via `policy_satisfied = false` (plus per-kind indicators where applicable). "HARD" below refers to **merge-engine enforcement against the verifier's output**: when the submit handler runs the verifier and observes an auth failure, the merge engine rejects the candidate batch and the new events never land. The verifier-side soft-fail composition is documented in [../../../../protocol-doctrine.md §Verifier and merge are distinct treatments](../../../../protocol-doctrine.md#verifier-and-merge-are-distinct-treatments).
+
+The contesting privileged event's authorization is verified against `v_{d-1}`'s commitments — `Rot` via single-signature against `rotationHash`; `Ror`/`Dec` via dual-signature against `rotationHash` AND `recoveryHash`. Authorization failure is HARD at the merge layer — a contesting event whose signatures don't verify is rejected by the merge engine on the verifier's output; the chain stays at its prior state. Per-kind signature shape is documented in [events.md §Authorization model](events.md#authorization-model); the HARD-at-the-merge-layer rule applies uniformly to all privileged kinds.
 
 ## Event Types and Their Signatures
 

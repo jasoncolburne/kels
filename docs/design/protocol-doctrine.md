@@ -9,10 +9,12 @@ The structural rules that govern KELS — security invariants, cross-cutting doc
   - [Forks are Seal-Bounded](#forks-are-seal-bounded)
   - [Per-Event Parent-Monotonic Ratchet (SEL-specific)](#per-event-parent-monotonic-ratchet-sel-specific)
   - [Privileged Divergence is Terminal](#privileged-divergence-is-terminal)
+  - [Event-class taxonomy](#event-class-taxonomy)
   - [One Divergent Generation at a Time](#one-divergent-generation-at-a-time)
   - [Anchor Tier Elevation](#anchor-tier-elevation)
+  - [Sea-after-Upd ratchet (application pattern)](#sea-after-upd-ratchet-application-pattern)
   - [Trust Model on Contested Chains](#trust-model-on-contested-chains)
-  - [Limit of the Doctrine](#limit-of-the-doctrine)
+  - [Limit of the doctrine — current-state compromise](#limit-of-the-doctrine)
 
 **[Part 2 — Cross-Cutting Doctrines](#part-2-cross-cutting-doctrines):**
 - [Ordering Without Timestamps](#ordering-without-timestamps)
@@ -83,23 +85,25 @@ This closes the **stale-state kill-switch problem**. Without this rule, every pa
 
 The structural mechanism that enforces "current-state-only authority" is the chain's evaluation/recovery seal:
 
-Each primitive tracks `lastSealAdvancingEvent` — the SAID of the chain's most recent privileged-or-archiving non-terminal event that landed cleanly on the linear chain. **A privileged event creating or joining a divergent set does NOT advance the seal** — the protocol cannot identify a canonical submitter when conflicting privileged events occupy the same serial, so the seal stays at the prior linear-portion advance. Archiving events (`Rec` on KEL, `Rpr` on SEL) route through the discriminator before any divergent-set check fires; they resolve divergence rather than create or join it, and so they advance the seal when they land. The advancing kinds differ:
+Each primitive tracks `lastSealAdvancingEvent` — the SAID of the chain's most recent advancing event (per the per-primitive list below) that landed cleanly on the linear chain. **A privileged event creating or joining a divergent set does NOT advance the seal** — the protocol cannot identify a canonical submitter when conflicting privileged events occupy the same serial, so the seal stays at the prior linear-portion advance. Archiving events (`Rec` on KEL, `Rpr` on SEL) route through the discriminator before any divergent-set check fires; they resolve divergence rather than create or join it, and so they advance the seal when they land. The advancing kinds differ:
 
 - **KEL**: `Rec`/`Ror`/`Rot`.
-- **IEL**: `Evl`.
+- **IEL**: `Evl` only. `Icp` is excluded — the seal-advance machinery is meaningful only after the first non-inception event lands, since the seal-cap rule it gates (`parent_serial >= seal_serial`) is structurally vacuous against `Icp` (which has no parent).
 - **SEL**: `Est` (at v=1) / `Sea`/`Rpr`.
+
+`Icp` is also excluded on SEL — only `Est` at v=1 enters the SEL set; SEL `Icp` is permissionless and unanchored, and the seal becomes meaningful starting at v=1.
 
 The terminal kind (`Dec` everywhere) enforces the seal but does not advance it.
 
-KEL additionally tracks `lastRecoveryRevealingEvent` (`Rec`/`Ror`/`Dec`) for the spent-key / immunity rule and for the Ror cap. This is a distinct concept from the seal — the seal-advancing kinds (`Rec`/`Ror`/`Rot`) bound chain-state changes, while the recovery-revealing kinds (`Rec`/`Ror`/`Dec`) bound how stale a tracked recovery-key commitment can become. See [primitives/data/event-logs/kel/event-log.md §Seal and Key Immunity](primitives/data/event-logs/kel/event-log.md#seal-and-key-immunity).
+KEL additionally tracks `lastRecoveryRevealingEvent` (`Rec`/`Ror`/`Dec`) for the spent-key / immunity rule. This is a distinct concept from the seal — the seal-advancing kinds (`Rec`/`Ror`/`Rot`) bound chain-state changes, while the recovery-revealing kinds (`Rec`/`Ror`/`Dec`) track which recovery-key preimage is currently committed (and once spent, cannot be reused to recover against an earlier divergence). Recovery-preimage rotation cadence is operator guidance, not a protocol-enforced cap — see [primitives/data/event-logs/kel/events.md §Cap doctrine](primitives/data/event-logs/kel/events.md#cap-doctrine). See also [primitives/data/event-logs/kel/event-log.md §Seal and Key Immunity](primitives/data/event-logs/kel/event-log.md#seal-and-key-immunity).
 
 A new event's parent MUST sit at-or-after the seal (`parent_serial >= seal_serial`). Since `event_serial = parent_serial + 1`, this is equivalently `event_serial > seal_serial` — the event lands strictly after the seal-defining event. Any submission whose parent sits in the locked portion (`parent_serial < seal_serial`) is rejected (`"Cannot extend serial V — parent in locked portion behind seal at serial S"`). This guarantees the auth context resolved at the event's parent is the chain's currently-tracked policy / key state — not a stale one, and that no event lands at the seal-defining event's own serial.
 
 **Bounds on the post-seal window per primitive:**
 
-- **KEL**: two parallel caps. The **seal-advance cap** bounds the chain at `MINIMUM_PAGE_SIZE − 2 = 62` non-seal-advancing events between privileged-or-archiving events (`Rec`/`Ror`/`Rot`). The independent **Ror cap** bounds at 512 events between recovery-revealing events (`Rec`/`Ror`/`Dec`), holding recovery-key-preimage staleness in check. Both numbers are protocol constants — `MINIMUM_PAGE_SIZE` is a deployment floor, not a per-deployment knob, so a recovery batch produced on any conformant deployment fits in any other's single page. See [primitives/data/event-logs/kel/events.md §Two parallel caps](primitives/data/event-logs/kel/events.md#two-parallel-caps).
+- **KEL**: one protocol-enforced cap. The **seal-advance cap** bounds the chain at `MINIMUM_PAGE_SIZE − 2 = 62` non-seal-advancing events between privileged-or-archiving events (`Rec`/`Ror`/`Rot`). `MINIMUM_PAGE_SIZE` is a protocol constant (a deployment floor, not a per-deployment knob), so a recovery batch produced on any conformant deployment fits in any other's single page. Recovery-key-preimage rotation cadence (how often `Ror` should land) is operator guidance — not a protocol-enforced cap — because recovery keys are typically hardware-held and preimage-identified rather than usage-degraded, and a protocol-forced cadence would impose access on cold-stored / separated-custody recovery keys on a fixed schedule. See [primitives/data/event-logs/kel/events.md §Cap doctrine](primitives/data/event-logs/kel/events.md#cap-doctrine).
 - **IEL**: no protocol cap — every non-terminal IEL event advances the seal, so the seal coincides with the tip on linear chains and within-window forks don't structurally exist. The "how stale can authority become" bound is operator-side discipline.
-- **SEL**: protocol-bounded at `MINIMUM_PAGE_SIZE − 2 = 62` non-seal-advancing events via the **seal-advance cap** (`Est` at v=1; `Sea` or `Rpr` thereafter). Combined with SEL's per-event parent-monotonic ratchet on `ielEvent`, this prevents stale-IEL-policy holders from extending an existing branch with a regressed binding. The `− 2` headroom accommodates a `[Rpr, Sea]` atomic repair-and-resealing batch in one `MINIMUM_PAGE_SIZE`-bounded page on every conformant deployment.
+- **SEL**: protocol-bounded at `MINIMUM_PAGE_SIZE − 2 = 62` non-seal-advancing events via the **seal-advance cap** (`Est` at v=1; `Sea` or `Rpr` thereafter). Combined with SEL's per-event parent-monotonic ratchet on `ielEvent`, this prevents stale-IEL-policy holders from extending an existing branch with a regressed binding. The `− 2` headroom accommodates an atomic 2-event lifecycle batch — `[Rpr, Sea]` (repair followed by post-Evl re-resealing) is the SEL worst-case shape — in one `MINIMUM_PAGE_SIZE`-bounded page on every conformant deployment. (The same 2-event-headroom rationale applies to KEL with its primitive-specific worst-case batch; the structural shape is identical across primitives.)
 
 The SEL-specific ratchet that the bound composes with lives at [§Per-Event Parent-Monotonic Ratchet (SEL-specific)](#per-event-parent-monotonic-ratchet-sel-specific) below.
 
@@ -117,7 +121,7 @@ The protocol's terminal-authority mechanism is three composable rules. Read them
 
 **1. Privileged-divergence-is-terminal.** Divergence at a serial where the divergent set contains at least one privileged event makes the chain immediately and terminally contested. Privileged events differ per primitive:
 
-- **KEL privileged-or-archiving**: `Rot`, `Rec`, `Ror`, `Dec`. The privileged subset (`Rot`, `Ror`, `Dec`) triggers privileged-divergence-is-terminal; the archiving event (`Rec`) routes through the discriminator. The recovery-revealing sub-class (`Rec`, `Ror`, `Dec`) is dual-signed and gates the Ror cap; `Rot` is single-signed and seal-advancing but not recovery-revealing.
+- **KEL privileged-or-archiving**: `Rot`, `Rec`, `Ror`, `Dec`. The privileged subset (`Rot`, `Ror`, `Dec`) triggers privileged-divergence-is-terminal; the archiving event (`Rec`) routes through the discriminator. The recovery-revealing sub-class (`Rec`, `Ror`, `Dec`) is dual-signed; `Rot` is single-signed and seal-advancing but not recovery-revealing.
 - **IEL privileged**: every event kind — `Icp`, `Evl`, `Dec` (all governance-authorized including `Icp`). The chain cannot be contested before its inception; the rule is structurally vacuous at `Icp` itself but applies uniformly to any divergence post-inception.
 - **SEL privileged-or-archiving**: `Est`, `Sea`, `Rpr`, `Dec`. The privileged subset (`Est`, `Sea`, `Dec`) triggers privileged-divergence-is-terminal; the archiving event (`Rpr`) routes through the discriminator. `Est` is privileged at v=1 (tier-2 anchored, governance-authorized seal-advance — see [§Anchor Tier Elevation](#anchor-tier-elevation)).
 
@@ -153,9 +157,9 @@ KEL `Rec` and SEL `Rpr` resolve divergence by archiving events via the discrimin
 - **Branch-tip-extending shape** — `Rec.previous` / `Rpr.previous` is a branch tip at `v_d`. Rec/Rpr extends that branch at `v_{d+1}`; the other branch is archived.
 - **Divergence-ancestor-extending shape** — `Rec.previous` / `Rpr.previous` is `v_{d-1}`, the divergence ancestor. Rec/Rpr lands at `v_d`; ALL events at `serial >= d` (both branches) are archived. Rec/Rpr is the only event at `v_d` after the discriminator runs.
 
-##### Privileged and archiving event classes
+##### Routing semantics of privileged and archiving kinds
 
-Privileged events route by kind in the merge engine, so the upgrade rule's scope is well-defined and the rules above don't conflict with one another:
+How the merge engine routes the two non-content classes (the full three-class taxonomy is in [§Event-class taxonomy](#event-class-taxonomy) below). Routing by kind ensures the upgrade rule's scope is well-defined and the rules above don't conflict with one another:
 
 - **Archiving kinds** — `Rec` (KEL), `Rpr` (SEL). Go through the discriminator's archival path. Either parent shape (branch-tip-extending or divergence-ancestor-extending — see preceding subsection) bypasses the upgrade rule, since the discriminator removes the divergent set before any divergent-set check fires.
 - **Privileged kinds** — `Rot`, `Ror`, `Dec` on KEL; `Est`, `Sea`, `Dec` on SEL. Do not archive. When their parent is `v_{d-1}.said` (the divergence ancestor) and a non-privileged divergent set already exists at `v_d`, they join the divergent set as a third event via the upgrade rule, triggering contested via rule 1. They reach this shape when the submitter's local tip is at `v_{d-1}` and they extend it directly with `previous = tip.said`; the event lands at `v_d`.
@@ -213,7 +217,7 @@ Authorization for a repair event (`Rec` on KEL, `Rpr` on SEL) resolves through t
 
 - **KEL.** The dual signature is produced under the private signing and recovery keys whose public-key preimages are committed by the parent event's `rotationHash` and `recoveryHash`. Revealing the public-key preimage via a prior event landing at the parent's child serial does not yield the corresponding private key; signing capability remains submitter-held.
 - **SEL.** The IEL-resolved governance policy at the SEL's `ielEvent` binding for the parent event (`Rpr.previous`).
-- **IEL.** No repair events on IEL — see §Repair-event absence below.
+- **IEL.** No repair events on IEL. Every IEL event is privileged, so any divergence is contested-terminal at first observation per [§Privileged Divergence is Terminal](#privileged-divergence-is-terminal); there is no non-privileged-divergent state for a repair event to resolve.
 
 Repair-event authorization is **HARD** at the merge layer per condition 2a. **General invariant: any event with failed auth is rejected.** A repair event (or `Dec`) whose dual-signature, governance-anchor, or IEL-resolved-policy check fails is rejected by the merge handler; the chain stays at its prior state. The DB-cannot-be-trusted invariant requires this — an unauthorized terminal must not advance the chain locally. See [§Verifier and merge are distinct treatments](#verifier-and-merge-are-distinct-treatments) for how the verifier's soft-fail composition is hardened at the merge layer.
 
@@ -301,15 +305,16 @@ The protocol's events fall into orthogonal axes: **class** (chain-state effect w
 - **Tier.** Key material required to forge.
   - For KEL events: which preimages the event reveals (1: signing key only; 2: + rotation preimage; 3: + recovery preimage; tier-3 KEL events are dual-signed).
   - For IEL/SEL events: tier of KEL anchor required per contributing policy member.
-- **SEL `Icp`** is the only unanchored event — permissionless, dedup-equivalent across submitters; the v=1 `Est` in the same inception batch carries the actual binding and authorization.
+- **Anchor relationship.** For KEL events: which IEL/SEL anchor tier this kind hosts (the anchor surface a downstream event references). For IEL/SEL events: which KEL anchor kind is required per contributing policy member to satisfy authorization. `Rec`/`Dec` on KEL do not host anchors (they are not extension events); SEL `Icp` is permissionless and unanchored.
+- **SEL `Icp`** is the only unanchored event — permissionless, dedup-equivalent across submitters; the v=1 `Est` in the same inception batch carries the actual binding and authorization. Its content-class assignment is nominal: the content-class divergent-set behavior does not apply, since `Icp` dedups to a single SAID across all submitters and cannot form a divergent set at v=0.
 
 **Structural pattern.**
 
-- All **privileged** events sit at tier 2 or 3.
-- All **archiving** events sit at tier 3 (exclusively).
-- All **content** events sit at tier 1 (or unanchored for SEL `Icp`).
+- **Content** events populate tier 1 and the unanchored slot (SEL `Icp`).
+- **Privileged** events populate tier 2 or tier 3.
+- **Archiving** events populate tier 3 (exclusively).
 
-Tier 1 is content exclusively. Tier 2 is privileged exclusively. Tier 3 is mixed (privileged + archiving). The pattern reflects two facts: lower tiers don't carry chain-state-effecting authority, and archival operations cryptographically require the recovery preimage (tier 3).
+Tier 2 is privileged exclusively; tier 3 is mixed (privileged + archiving). The pattern reflects two facts: lower tiers don't carry chain-state-effecting authority, and archival operations cryptographically require the recovery preimage (tier 3).
 
 **Tier and class are independent axes** — the table's cell population happens to align (tier-1 always content, tier-2 always privileged, tier-3 mixed) but the axes describe distinct properties. Tier describes "what key material was required"; class describes "what happens to the chain when the event lands in a divergent set." See [§Anchor Tier Elevation](#anchor-tier-elevation) for tier semantics and the durability property derived from this taxonomy.
 
@@ -437,7 +442,9 @@ A worked enumeration to make the indistinguishability concrete. In each case the
 
 Same chain shape in every case. The protocol cannot distinguish them post-divergence. Treating post-divergence events as submitter-indistinguishable is the only response that fails secure across all five; at-or-below-seal verifiability survives all five per [§Pre-divergence verifiability survives contestation](#pre-divergence-verifiability-survives-contestation).
 
-#### Limit of the Doctrine
+<a id="limit-of-the-doctrine"></a>
+
+#### Limit of the doctrine — current-state compromise
 
 The doctrine closes attacks rooted in **past** state. It does NOT defend against compromise of **current** state.
 
@@ -670,7 +677,7 @@ All verify-then-write paths hold PostgreSQL advisory locks for the duration of b
 
 The effective SAID is the canonical chain-tip representation across KEL, IEL, and SEL. It identifies the chain's current state and lets nodes recognize that state across the network without exchanging chain data.
 
-**Concrete vs synthetic representations.** Normal-tip chains carry the tip event's real SAID as the effective SAID; decommissioned chains (where `Dec` is the terminal tip — IEL only) carry the `Dec` event's real SAID. Two states have synthetic representations:
+**Concrete vs synthetic representations.** Normal-tip chains carry the tip event's real SAID as the effective SAID; decommissioned chains (where `Dec` is the terminal tip — applies on KEL, SEL, and IEL) carry the `Dec` event's real SAID. Two states have synthetic representations:
 
 - `hash_effective_said("divergent:{prefix}")` — chain has competing branches at some serial (non-privileged divergent set; not yet contested).
 - `hash_effective_said("contested:{prefix}")` — chain's divergent set contains a privileged event; privileged-divergence-is-terminal has fired; chain is Contested. No event of any kind lands.

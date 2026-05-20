@@ -90,7 +90,7 @@ use crate::{handlers::AppState, repository::KelsRepository};
 
 **Merge results**: Accepted, Recovered, Contested, Diverged, RecoverRequired, ContestRequired.
 
-**Policy** — DSL for authorization: `endorse(PREFIX)`, `delegate(DELEGATOR, DELEGATE)`, `threshold(MIN, [NODES])`, `weighted(MIN_WEIGHT, [NODE:W])`, `policy(SAID)` nesting; per-policy `poison` / `immune` modes. See `docs/design/features/policy.md`.
+**Policy** — DSL for authorization: `endorse(PREFIX)`, `identity(PREFIX)`, `delegate(DELEGATOR)`, `threshold(MIN, [NODES])`, `weighted(MIN_WEIGHT, [NODE:W])`, `policy(SAID)` nesting; per-policy `poison` / `immune` modes. `delegate(DELEGATOR)` is the open form — the specific delegate is discovered at policy-evaluation time. See `docs/design/features/policy.md`.
 
 **Credentials** — verifiable claims issued under a policy, anchored in KELs. See `docs/design/features/creds.md`.
 
@@ -112,7 +112,7 @@ Storage: `iel_events` table; `/api/v1/iel/events*` routes; `iel_updates` Redis c
 
 See `docs/design/primitives/data/event-logs/iel/events.md`, `docs/design/primitives/data/event-logs/iel/event-log.md`, `docs/design/primitives/data/event-logs/iel/verification.md`, `docs/design/primitives/data/event-logs/iel/merge.md`.
 
-**Custody** — per-SAD-object authority. Inline `custody.write` (IELSaid; one-time anchored write attestation; satisfied at write time) and `custody.read` (IELPrefix; identity-current; resolved through the IEL's current `authPolicy` at read time). Decoupled from `availability` (replication + lifecycle; sibling top-level field). See `docs/design/infrastructure/sadstore.md` and `docs/design/primitives/data/event-logs/iel/event-log.md §Cascading effect on dependent SELs`.
+**Custody** — per-SAD-object authority via two independent flat top-level fields on the SAD wrapper. `ownerIelEvent` (IEL event SAID; one-time anchored write attestation; satisfied at write time, dereferencable for either point-in-time or identity-current verification) and `readPolicy` (policy SAID; evaluated at read time via `evaluate_signed_policy` against the verified prefix set from a `SignedRequest` — composable across identities via `identity(X)`, `threshold`, etc.). Decoupled from `availability` (replication + lifecycle; sibling top-level field). See `docs/design/infrastructure/sadstore.md` and `docs/design/primitives/data/event-logs/iel/event-log.md §Cascading effect on dependent SELs`.
 
 ## Architecture
 

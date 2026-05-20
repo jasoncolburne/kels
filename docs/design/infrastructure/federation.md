@@ -307,7 +307,7 @@ A contested federation IEL stays contested forever — that is the structural me
 ## References
 
 - [primitives/data/event-logs/iel/event-log.md](../primitives/data/event-logs/iel/event-log.md) — IEL chain semantics, policy immunity, divergence, contest.
-- [primitives/data/event-logs/iel/events.md](../primitives/data/event-logs/iel/events.md) — event kinds (`Icp`, `Evl`, `Sea`, `Dec`).
+- [primitives/data/event-logs/iel/events.md](../primitives/data/event-logs/iel/events.md) — event kinds (`Icp`, `Evl`, `Dec`).
 - [protocol-doctrine.md §Federation Convergence](../protocol-doctrine.md#federation-convergence) — the cross-node convergence guarantee the federation relies on.
 - [primitives/data/event-logs/iel/event-log.md §Multi-Party Governance Synchronization](../primitives/data/event-logs/iel/event-log.md#multi-party-governance-synchronization) — out-of-band serialization of IEL `Evl` submissions.
 - [features/policy.md](../features/policy.md) — policy DSL (`threshold`, `identity`, `endorse`, immunity).

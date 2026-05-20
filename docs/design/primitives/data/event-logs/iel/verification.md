@@ -107,7 +107,9 @@ Policy state is **branch-tracked**. Two fields:
 
 ### Terminal-state determination and authorization
 
-All events on IEL require HARD anchor: a `Dec` whose governance check fails is rejected at the verifier; the chain stays at its prior state. Structural integrity rules — SAID validity, serial monotonicity, immunity check on policy evolution — stay HARD as well.
+> **Verifier vs merge-engine semantics.** The verifier itself does not reject events — it records what it observed (anchored SAIDs, satisfied SAIDs) and surfaces authorization failures via `policy_satisfied = false` on the verification token. "HARD" below refers to **merge-engine enforcement against the verifier's output**: the merge layer treats `policy_satisfied = false` (and any auth-failure indicator the verifier exposes) as rejection of the candidate event, so an auth-failed event never lands on the chain. The verifier-side soft-fail composition is documented in [../../../../protocol-doctrine.md §Verifier and merge are distinct treatments](../../../../protocol-doctrine.md#verifier-and-merge-are-distinct-treatments).
+
+All events on IEL require HARD anchor (merge-layer): a `Dec` whose governance check fails is rejected by the merge engine; the chain stays at its prior state. Structural integrity rules — SAID validity, serial monotonicity, immunity check on policy evolution — stay HARD as well.
 
 The verifier's terminal-state-determination rule on IEL is structural:
 - Divergent at `v_d`? **Yes → contested (terminal).** Every IEL event is privileged, so any divergent set on IEL contains a privileged event by construction; privileged-divergence-is-terminal fires at first 2-event observation. The "divergent-but-not-yet-contested" intermediate state doesn't arise on IEL; it exists for KEL (non-privileged Ixn-Ixn divergence, recoverable via `Rec`) and SEL (non-privileged Upd-Upd divergence at v ≥ 2, recoverable via `Rpr`).

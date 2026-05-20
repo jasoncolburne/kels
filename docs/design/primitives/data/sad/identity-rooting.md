@@ -4,7 +4,7 @@
 
 A SAD that asserts something about an identity carries an IEL-event SAID rather than a KEL prefix. The IEL event resolves to the issuer's (or subject's) currently-tracked `authPolicy` / `governancePolicy` at the moment the SAD was produced. Pinning to a specific IEL event means consumers can choose between **frozen-mode** (re-resolve at the bound event, preserving issuance-time policy) and **identity-current** (re-resolve at the IEL's current tip, picking up evolutions) verification.
 
-**Consumers:** credentials (`issuerIelEvent`, `subjectIelEvent`), custody-bearing objects (`custody.write`, `custody.read`), SEL events (`ielEvent`).
+**Consumers:** credentials (`issuerIelEvent`, `subjectIelEvent`), custody-bearing objects (`ownerIelEvent` for write attestation; `readPolicy` for read enforcement), SEL events (`ielEvent`).
 
 **Dependencies:** [../event-logs/iel/events.md](../event-logs/iel/events.md) for the IEL event semantics; [../../logic/resolvers/iel-resolver.md](../../logic/resolvers/iel-resolver.md) for the resolution mechanism; [../../../features/creds.md](../../../features/creds.md) for the credential-side framing.
 

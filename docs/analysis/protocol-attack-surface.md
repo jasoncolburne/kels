@@ -6,7 +6,7 @@ Analysis of attack vectors against the KELS protocol — cryptographic propertie
 
 The KELS protocol has no central authority. Four doctrinal pillars frame everything below; each protocol-level attack vector is best understood as an attempt to violate or evade one of them.
 
-**Compromise is permanent — authority is current-state-only.** The protocol grants authority only to a chain's currently-tracked state (and the most-recent shared pre-divergence state, where divergence has occurred). Past keys, past policies, past endorsers have zero structural ability to act on the chain. A KEL signing/recovery key rotated out of current state cannot extend the chain even if the adversary still holds the key material; an IEL `governance_policy` participant superseded by `Evl` cannot submit governance acts after their revocation; an SEL bound to a stale IEL event whose governance has since rotated cannot be extended by the rotated-out parties on the live branch (subject to operator-side ratcheting via `Sea`). The structural mechanism is the chain's evaluation/recovery seal: new events must land at-or-after `seal_serial`, so divergent branches always derive from a parent that carries the chain's currently-tracked state. See [../design/protocol-doctrine.md §Compromise is Permanent](../design/protocol-doctrine.md#compromise-is-permanent).
+**Compromise is permanent — authority is current-state-only.** The protocol grants authority only to a chain's currently-tracked state (and the most-recent shared pre-divergence state, where divergence has occurred). Past keys, past policies, past endorsers have zero structural ability to act on the chain. A KEL signing/recovery key rotated out of current state cannot extend the chain even if the adversary still holds the key material; an IEL `governancePolicy` participant superseded by `Evl` cannot submit governance acts after their revocation; an SEL bound to a stale IEL event whose governance has since rotated cannot be extended by the rotated-out parties on the live branch (subject to operator-side ratcheting via `Sea`). The structural mechanism is the chain's evaluation/recovery seal: new events must land at-or-after `seal_serial`, so divergent branches always derive from a parent that carries the chain's currently-tracked state. See [../design/protocol-doctrine.md §Compromise is Permanent](../design/protocol-doctrine.md#compromise-is-permanent).
 
 **End-verifiability.** Every event carries SAID + signature + chain linkage. Tampering at any node — by an adversary, by a buggy replication path, by a malicious peer — surfaces at the consumer's verifier walk. The source of an event is untrusted; the data of the event is end-verified. Protocol attack surface is structurally bounded to what an adversary can do with **valid data**, not what they can do by injecting a single node into the gossip mesh.
 
@@ -195,12 +195,12 @@ The "Rotation key compromised" subsection above covers the tier-2 adversary in f
 
 ## IEL Attack Surface
 
-The IEL primitive governs identity authorization via `auth_policy` (consumed by SELs) and `governance_policy` (the chain's own gate). All IEL events — `Icp`, `Evl`, `Dec` — are governance-authorized; this has structural consequences for divergence handling. See [../design/primitives/data/event-logs/iel/event-log.md](../design/primitives/data/event-logs/iel/event-log.md).
+The IEL primitive governs identity authorization via `authPolicy` (consumed by SELs) and `governancePolicy` (the chain's own gate). All IEL events — `Icp`, `Evl`, `Dec` — are governance-authorized; this has structural consequences for divergence handling. See [../design/primitives/data/event-logs/iel/event-log.md](../design/primitives/data/event-logs/iel/event-log.md).
 
 ### Past Governance-Policy Replay (Doctrine Win)
 
-**Attack:** Adversary holds a past (rotated-out) `governance_policy` preimage. Tries to submit `Evl`/`Sea`/`Dec` under it.
-- **Mitigation:** Verifier resolves authorization against the **currently-tracked** `governance_policy` (declared at the predecessor's `Icp` or evolved by the predecessor's `Evl`). Past-policy preimages fail the current-state check. HARD-fail rejection at the verifier walk — every event with failed auth is rejected.
+**Attack:** Adversary holds a past (rotated-out) `governancePolicy` preimage. Tries to submit `Evl`/`Sea`/`Dec` under it.
+- **Mitigation:** Verifier resolves authorization against the **currently-tracked** `governancePolicy` (declared at the predecessor's `Icp` or evolved by the predecessor's `Evl`). Past-policy preimages fail the current-state check. HARD-fail rejection at the verifier walk — every event with failed auth is rejected.
 - **Doctrine reference:** [../design/protocol-doctrine.md §Compromise is Permanent](../design/protocol-doctrine.md#compromise-is-permanent).
 - **Symmetry:** Structurally parallel to KEL Past-Key Replay and SEL Past-Binding Replay (see [§Stale-IEL-Binding Upd on Existing SEL](#stale-iel-binding-upd-on-existing-sel)). All three rely on the verifier resolving authorization against current state, not historical state.
 
@@ -212,7 +212,7 @@ The IEL primitive governs identity authorization via `auth_policy` (consumed by 
 
 ### Threshold Compromise via Evl
 
-**Attack:** Adversary acquires enough currently-tracked `governance_policy` preimage to satisfy threshold. Legitimately rotates governance away from the prior operator via `Evl`.
+**Attack:** Adversary acquires enough currently-tracked `governancePolicy` preimage to satisfy threshold. Legitimately rotates governance away from the prior operator via `Evl`.
 - **Mitigated by anchor tier elevation against signing-only compromise.** `Evl` requires tier-2 anchor (`Rot` per contributing policy member) — signing-only compromise of governance members cannot produce the rotation-tier preimage required for `Rot`. The attack is closed for signing-only compromise. See [../design/protocol-doctrine.md §Anchor Tier Elevation](../design/protocol-doctrine.md#anchor-tier-elevation).
 - **Outcome (under rotation-key compromise):** An adversary who has compromised the rotation-key preimage (preimage of `rotation_hash`) for enough governance members can forge `Rot` events anchoring the IEL `Evl` — `Rot` is signed by the revealed new signing key, which IS the rotation preimage, so signing-key compromise is not separately required. The adversary controls the chain's currently-tracked authority after the rotation lands. No protocol-level recourse post-rotation.
 - **Mitigation (against rotation-key compromise):** None at the protocol layer post-rotation. Operational defenses: high thresholds, separation of custody (especially key-tier custody separation per member — anchor elevation's value scales with custody hygiene), threshold redundancy (see [../design/features/policy.md §Threshold Redundancy](../design/features/policy.md#threshold-redundancy)), abandon-and-reincept under a new prefix. Within the detect-and-respond window (before the adversary's `Evl` lands), the operator who still satisfies the pre-rotation governance can submit a tier-3-anchored `Dec` under that authority — `Dec` requires `Ror` per contributing member (tier 3, requires both rotation- and recovery-key preimages), strictly stronger than the adversary's tier-2 `Evl`. This is the "current-state compromise" limit covered under [../design/protocol-doctrine.md §Limit of the Doctrine](../design/protocol-doctrine.md#limit-of-the-doctrine).
@@ -225,47 +225,49 @@ The IEL primitive governs identity authorization via `auth_policy` (consumed by 
 
 ### Stale-IEL-Binding by SEL (cross-reference)
 
-IEL events resolve their authorization intrinsically (via tracked policies); they don't reference other chains for their own auth. SELs bind to IEL events via `iel_event`, and that's where stale-binding attacks land. See [§SEL Attack Surface — Stale-IEL-Binding Upd on Existing SEL](#stale-iel-binding-upd-on-existing-sel).
+IEL events resolve their authorization intrinsically (via tracked policies); they don't reference other chains for their own auth. SELs bind to IEL events via `ielEvent`, and that's where stale-binding attacks land. See [§SEL Attack Surface — Stale-IEL-Binding Upd on Existing SEL](#stale-iel-binding-upd-on-existing-sel).
 
 ## SEL Attack Surface
 
-SELs are identity-rooted — every SEL binds at inception to an IEL prefix and resolves per-event authorization through specific IEL event SAIDs (`iel_event` field). See [../design/primitives/data/event-logs/sel/event-log.md](../design/primitives/data/event-logs/sel/event-log.md).
+SELs are identity-rooted — every SEL binds at inception to an IEL prefix and resolves per-event authorization through specific IEL event SAIDs (`ielEvent` field). See [../design/primitives/data/event-logs/sel/event-log.md](../design/primitives/data/event-logs/sel/event-log.md).
 
 ### Pre-Icp Camping
 
-**Attack:** Adversary holds a past IEL `auth_policy` preimage. For a `(identity, topic)` pair that the legitimate operator hasn't asserted yet, the adversary submits `[Icp, Upd_stale]` first — `Icp` derives the SEL prefix deterministically from `(identity, topic)` (permissionless); `Upd_stale` binds to a past IEL event whose `auth_policy` the adversary can satisfy.
-- **Mitigation:** Application-layer enrollment-time pattern. When the legitimate operator submits their own `[Icp, Upd_legit]`:
+**Attack:** For a `(identity, topic)` pair the legitimate operator hasn't asserted yet, an adversary holding a tier-2 KEL `Rot` capability under the IEL's `authPolicy` submits `[Icp, Est_camper]` first — `Icp` derives the SEL prefix deterministically from `(identity, topic)` (permissionless); `Est_camper` binds the chain to the adversary's chosen `ielEvent` and carries the chain's first content. `Est` is privileged at tier 2 per [../design/protocol-doctrine.md §Anchor Tier Elevation](../design/protocol-doctrine.md#anchor-tier-elevation) — every camp attempt costs a KEL `Rot` per contributing policy member.
+- **Mitigation (structural — mutual destruction):** When the legitimate operator submits their own `[Icp, Est_op]`:
   - `Icp` dedups (deterministic prefix derivation; same SAID across submitters).
-  - `Upd_legit.previous = Icp.said` — operator extends `Icp` via dedup-equivalence (an endorsement-class event never extends an adversary event; see [../design/protocol-doctrine.md §Extension Discipline](../design/protocol-doctrine.md#extension-discipline)). `Upd_legit` lands at `v_1` alongside `Upd_stale`, creating a non-privileged divergent set (both auth-authorized; Upd-Upd race shape).
-  - Operator submits `Rpr` (governance-authorized via the bound IEL's current `governance_policy`) extending the `Upd_legit` branch; the discriminator archives `Upd_stale`. `Rpr` lands at `v_2`; the chain becomes the operator's.
-  - Operator treats the user as inactive during enrollment; no consumers honor authorizations rooted in the in-progress chain. See [../development/enrollment.md](../development/enrollment.md).
-- **Residual visibility cost:** `Upd_stale` moves to the archive table as forensic record; visible to a determined inspector but cannot ground authorization.
+  - `Est_op.previous = Icp.said` — operator extends `Icp` via dedup-equivalence (an endorsement-class event never extends an adversary event; see [../design/protocol-doctrine.md §Extension Discipline](../design/protocol-doctrine.md#extension-discipline)). `Est_op` lands at `v_1` alongside `Est_camper`, creating a 2-event **privileged** divergent set (both Est events are tier-2 privileged).
+  - Privileged-divergence-is-terminal fires at first observation per [../design/protocol-doctrine.md §Privileged Divergence is Terminal](../design/protocol-doctrine.md#privileged-divergence-is-terminal); the chain becomes contested-terminal at `(identity, topic)`. Neither party gets a working chain.
+  - Cross-federation: each node sees one of `Est_camper` / `Est_op` landing first; gossip-arriving competing Est is rejected by the seal-cap on each node. Federation-level convergence on the contested status is handled at the infrastructure layer (see [../design/protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../design/protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
+  - Operator recourse against a successful camp is **reincept under a new `(identity, topic)` tuple** — no in-protocol `Rpr` resolution, because `Rpr` extends an existing live branch and a contested chain accepts no further events. See [../development/enrollment.md](../development/enrollment.md) for the enrollment-time pattern (treat the user as inactive until the chain is operator-controlled).
+- **Why this is structurally sound rather than a vulnerability:** The defense composes four rules — `Icp` permissionless preserves dedup-idempotency on a prefix-deterministic inception; `Est` tier-2 raises per-attempt camping cost to a KEL `Rot` per contributing policy member; the inception batch rule rejects bare `[Icp]` (see §Permissionless-Icp Single-Event Squat below); `Est`-`Est` mutual destruction means a successful camp dies along with the operator's attempt, removing any "camper holds the chain" outcome. Mass camping is economically unprofitable; single-target camping remains possible but yields nothing usable to the camper.
+- **Residual visibility cost:** Post-divergence events remain on the contested chain as forensic record; the chain is forward-terminal — no consumers honor authorizations rooted in the post-divergence portion.
 - **Structural impossibility of closing further:** The deterministic prefix derivation enables dedup-idempotency, which is what creates the camping window. Closing the window would require breaking dedup-idempotency.
 
 ### Stale-IEL-Binding Upd on Existing SEL (Doctrine Win)
 
-**Attack:** Adversary holds a past IEL `auth_policy` preimage. Tries to extend an existing SEL branch with `Upd_stale` referencing an old IEL event whose `auth_policy` the adversary can satisfy.
-- **Mitigation:** Per-event parent-monotonic ratchet on `iel_event` (applied per branch). Each SEL event's `iel_event` must be at-or-after its parent event's `iel_event` in IEL chain order. If the operator's branch tip is bound to a recent IEL event (e.g., `IEL_v5`), an adversary's `Upd_stale` bound to `IEL_v2` cannot extend that branch — its `iel_event` regresses relative to the parent. HARD-fail rejection at the verifier walk.
+**Attack:** Adversary holds a past IEL `authPolicy` preimage. Tries to extend an existing SEL branch with `Upd_stale` referencing an old IEL event whose `authPolicy` the adversary can satisfy.
+- **Mitigation:** Per-event parent-monotonic ratchet on `ielEvent` (applied per branch). Each SEL event's `ielEvent` must be at-or-after its parent event's `ielEvent` in IEL chain order. If the operator's branch tip is bound to a recent IEL event (e.g., `IEL_v5`), an adversary's `Upd_stale` bound to `IEL_v2` cannot extend that branch — its `ielEvent` regresses relative to the parent. HARD-fail rejection at the verifier walk.
 - **Doctrine reference:** [../design/protocol-doctrine.md §Forks are Seal-Bounded](../design/protocol-doctrine.md#forks-are-seal-bounded) (per-event parent-monotonic on SEL).
-- **Symmetry:** Structurally parallel to KEL Past-Key Replay and IEL Past Governance-Policy Replay. The mechanism differs (SEL references its auth context via `iel_event` rather than tracking it intrinsically), but the doctrinal-rejection shape is the same.
+- **Symmetry:** Structurally parallel to KEL Past-Key Replay and IEL Past Governance-Policy Replay. The mechanism differs (SEL references its auth context via `ielEvent` rather than tracking it intrinsically), but the doctrinal-rejection shape is the same.
 
 ### Race-Divergence Upd-Upd
 
-**Attack:** Two parties holding currently-tracked `auth_policy` extend the SEL concurrently — each submits a competing `Upd` on a different node.
+**Attack:** Two parties holding currently-tracked `authPolicy` extend the SEL concurrently — each submits a competing `Upd` on a different node.
 - **Mitigation:** Non-privileged divergent set forms at the same version (both `Upd`s auth-authorized, neither privileged). Recoverable via `Rpr` (governance-authorized; archives one branch via the discriminator). Privileged-divergence-is-terminal does NOT fire — no privileged event in the divergent set. Standard divergence-resolution flow.
 - **Doctrine note:** Both branches are protocol-valid by construction; the protocol cannot determine which is the rightful operator. The `Rpr`-submitting party (whoever currently holds governance) dictates which branch survives.
 
 ### Permissionless-Icp Single-Event Squat
 
-**Attack:** Submit `[Icp]` alone (no `Upd`) for a `(identity, topic)` prefix to lock the chain at `v_0` with no policy enforcement.
-- **Mitigation:** Inception batch rule — a submission containing `Icp` MUST also contain `Upd` at `v_1` in the same batch. Enforced inside the verifier (`SelVerifier::finish_internal` returns `IncompleteInception` whenever any branch tip is still `Icp`). The rule lives in the verifier walk, not just at the submit handler, so a tampered DB serving `[Icp]` alone is rejected at end-verification. See [../design/primitives/data/event-logs/sel/events.md §Inception batch rule](../design/primitives/data/event-logs/sel/events.md#inception-batch-rule).
+**Attack:** Submit `[Icp]` alone (no `Est`) for a `(identity, topic)` prefix to lock the chain at `v_0` with no binding and no policy enforcement.
+- **Mitigation:** Inception batch rule — a submission containing `Icp` MUST also contain `Est` at `v_1` in the same batch. The minimum inception batch is `[Icp, Est, ...]`. Enforced inside the verifier (`SelVerifier::finish_internal` returns `IncompleteInception` whenever any branch tip is still `Icp`). The rule lives in the verifier walk, not just at the submit handler, so a tampered DB serving `[Icp]` alone is rejected at end-verification. See [../design/primitives/data/event-logs/sel/events.md §Inception batch rule](../design/primitives/data/event-logs/sel/events.md#inception-batch-rule).
 - **Result:** Single-event squat is structurally impossible.
 
 ### Stale-Bound Sea/Rpr/Dec
 
-**Attack:** Adversary holds a past IEL `governance_policy` preimage. Tries to submit any of the governance-authorized SEL lifecycle events (`Sea`/`Rpr`/`Dec`) bound to a past IEL event whose `governance_policy` the adversary can satisfy.
-- **Mitigation (general case):** HARD anchor — the verifier rejects unless the resolved policy at the bound IEL event is satisfied AND per-event parent-monotonic on `iel_event` is satisfied. On an actively-maintained live branch (operator has ratcheted `iel_event` forward via prior events), an adversary's stale-bound same-branch extension fails parent-monotonic.
-- **Acknowledged residual: privileged fork-contest with low `iel_event`.** A privileged event (`Sea` or `Dec`) that branches from `v_{d-1}` (forming its own singleton branch at `v_d`) need only satisfy `event.iel_event >= v_{d-1}.iel_event` — it does not need to satisfy any constraint relative to the existing diverged branches (those are structurally independent branches from this event's branch). A stale-governance holder can use this shape to land a chain in Contested whose live branch hasn't been ratcheted past their old IEL event. **Mitigation: governance-evolution Sea ratchet.** After IEL governance evolves, the operator submits `Sea` on each dependent SEL to advance the live branch's tip `iel_event` forward to the current IEL event, closing the regression window for adversaries extending the live branch. See [../design/primitives/data/event-logs/iel/event-log.md §What parent-monotonic blocks (and what it doesn't)](../design/primitives/data/event-logs/iel/event-log.md#what-parent-monotonic-blocks-and-what-it-doesnt).
+**Attack:** Adversary holds a past IEL `governancePolicy` preimage. Tries to submit any of the governance-authorized SEL lifecycle events (`Sea`/`Rpr`/`Dec`) bound to a past IEL event whose `governancePolicy` the adversary can satisfy.
+- **Mitigation (general case):** HARD anchor — the verifier rejects unless the resolved policy at the bound IEL event is satisfied AND per-event parent-monotonic on `ielEvent` is satisfied. On an actively-maintained live branch (operator has ratcheted `ielEvent` forward via prior events), an adversary's stale-bound same-branch extension fails parent-monotonic.
+- **Acknowledged residual: privileged fork-contest with low `ielEvent`.** A privileged event (`Sea` or `Dec`) that branches from `v_{d-1}` (forming its own singleton branch at `v_d`) need only satisfy `event.ielEvent >= v_{d-1}.ielEvent` — it does not need to satisfy any constraint relative to the existing diverged branches (those are structurally independent branches from this event's branch). A stale-governance holder can use this shape to land a chain in Contested whose live branch hasn't been ratcheted past their old IEL event. **Mitigation: governance-evolution Sea ratchet.** After IEL governance evolves, the operator submits `Sea` on each dependent SEL to advance the live branch's tip `ielEvent` forward to the current IEL event, closing the regression window for adversaries extending the live branch. See [../design/primitives/data/event-logs/iel/event-log.md §What parent-monotonic blocks (and what it doesn't)](../design/primitives/data/event-logs/iel/event-log.md#what-parent-monotonic-blocks-and-what-it-doesnt).
 
 ## Cross-Primitive Cascade
 
@@ -287,7 +289,7 @@ KELS primitives chain authority: KELs anchor IEL governance acts; IELs root SEL 
 ### Stale-Binding Propagation
 
 **Scenario:** An IEL evolves governance (via `Evl`). SELs bound to past IEL events keep their old authorization-resolution path, still resolving against the pre-evolution policy.
-- **Governance-evolution Sea ratchet:** After significant IEL governance evolution, the operator submits `Sea` on each dependent SEL to advance the live branch's tip `iel_event` forward to the new IEL event. This closes the regression window on the live branch — any same-branch extension thereafter must bind at-or-after the new IEL event (per-event parent-monotonic).
+- **Governance-evolution Sea ratchet:** After significant IEL governance evolution, the operator submits `Sea` on each dependent SEL to advance the live branch's tip `ielEvent` forward to the new IEL event. This closes the regression window on the live branch — any same-branch extension thereafter must bind at-or-after the new IEL event (per-event parent-monotonic).
 - **Structural defense:** None — chain mathematics permit stale bindings on pre-evolution events. The Sea ratchet is the structural recourse pattern. See [../design/primitives/data/event-logs/iel/event-log.md §Governance-evolution ratchet via Sea](../design/primitives/data/event-logs/iel/event-log.md#governance-evolution-ratchet-via-sea).
 
 ### Cascade-Reincept Cost
@@ -302,7 +304,7 @@ Cross-cutting concerns at the policy and SAID-resolution layer that apply across
 
 **Attack:** An IEL `Icp` or `Evl` references a policy whose `immune` flag isn't set, intending to mutate the policy's content later via a poison endorsement.
 - **Mitigation:** Both the merge engine (at submit time) and the verifier (at verification time) reject any IEL event that introduces or evolves a non-immune policy. Both layers enforce because the verifier processes data from any source — gossip, peer pulls, restored backups, bootstrap — and cannot trust that the originating node enforced the rule. See [../design/primitives/data/event-logs/iel/events.md §Policy immunity requirement](../design/primitives/data/event-logs/iel/events.md#policy-immunity-requirement).
-- **Result:** No policy used in IEL `auth_policy` or `governance_policy` can be poisoned. Past `Evl` / `Dec` evaluations stay satisfied by construction.
+- **Result:** No policy used in IEL `authPolicy` or `governancePolicy` can be poisoned. Past `Evl` / `Dec` evaluations stay satisfied by construction.
 
 ### Policy Substitution Under Same SAID
 
@@ -322,7 +324,7 @@ IEL/SEL verifiers resolve authorization by checking that the event's SAID is anc
 
 The verifier is the trust boundary; every chain-validity invariant lives in the verifier walk. A historically-relevant attack surface — a rule enforced only at the submit handler — is the canonical example of how this trust boundary works.
 
-**Pre-unification surface (historical example).** A chain-validity rule that lived only at the submit handler — e.g., the SEL `[Icp, Upd]` minimum batch rule prior to lifting it into `SelVerifier::finish_internal` — was bypassable by:
+**Pre-unification surface (historical example).** A chain-validity rule that lived only at the submit handler — e.g., the SEL `[Icp, Est]` minimum batch rule prior to lifting it into `SelVerifier::finish_internal` — was bypassable by:
 - Direct DB injection on a tampered node.
 - Replication from a malicious peer that didn't run the submit handler.
 - Bootstrap from a tampered backup.
@@ -414,8 +416,8 @@ End-verifiability provides a structural safety net here: even if a consumer fetc
 
 **Protocol-level attack vectors closed by the doctrine:**
 - **Past-key replay** (KEL) — verifier resolves against currently-tracked commitments.
-- **Past-policy replay** (IEL) — verifier resolves against currently-tracked `governance_policy`.
-- **Past-binding replay** (SEL) — per-event parent-monotonic on `iel_event` blocks same-branch regression.
+- **Past-policy replay** (IEL) — verifier resolves against currently-tracked `governancePolicy`.
+- **Past-binding replay** (SEL) — per-event parent-monotonic on `ielEvent` blocks same-branch regression.
 - **Seal-cap violation** — verifier rejects events landing strictly before the chain's last seal.
 - **Recovery-race / divergence-as-takeover ambiguity** — privileged-divergence-is-terminal fires uniformly on `Rec`/`Ror`/`Dec` (KEL), `Icp`/`Evl`/`Dec` (IEL), `Sea`/`Rpr`/`Dec` (SEL).
 - **Policy poisoning** — IEL immunity rule rejects non-immune policies at both submit and verify time.
@@ -423,7 +425,7 @@ End-verifiability provides a structural safety net here: even if a consumer fetc
 - **DB-and-key compromise on a single node** — replicated deployment surfaces inconsistency via gossip anti-entropy.
 
 **Residual surfaces the doctrine does not close — by construction:**
-- **Current-state compromise.** Once an adversary controls a chain's currently-tracked authority (KEL signing+recovery keys; IEL `governance_policy` threshold; SEL identity binding's authorizing IEL event), they ARE the chain's current state by every protocol-observable measure. Operational defenses only — high thresholds, custody separation, monitoring, fast operator response. See [../design/protocol-doctrine.md §Limit of the Doctrine](../design/protocol-doctrine.md#limit-of-the-doctrine).
+- **Current-state compromise.** Once an adversary controls a chain's currently-tracked authority (KEL signing+recovery keys; IEL `governancePolicy` threshold; SEL identity binding's authorizing IEL event), they ARE the chain's current state by every protocol-observable measure. Operational defenses only — high thresholds, custody separation, monitoring, fast operator response. See [../design/protocol-doctrine.md §Limit of the Doctrine](../design/protocol-doctrine.md#limit-of-the-doctrine).
 - **Race-vs-takeover indistinguishability.** Both legitimate races and adversarial forks produce identical chain shapes. Consumer-side judgment + out-of-band knowledge determines specific event-level interpretation; the protocol does not adjudicate.
 - **Coerced/forced termination.** A `Dec` submitted under duress is operationally indistinguishable from voluntary termination. Operational hardening only.
 - **Cascade-reincept cost.** A high-stakes identity (KEL or IEL) that goes terminal cascades into reincept of dependent IELs/SELs. The doctrine doesn't shrink the cost; it bounds it via identity-hierarchy design (don't anchor everything to one root). See [../../AGENTS.md §System Thesis](../../AGENTS.md#system-thesis).

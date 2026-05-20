@@ -2,19 +2,19 @@
 
 > Exhaustive enumeration of all KEL state × submission × gossip combinations, demonstrating that every case terminates correctly and all nodes converge on the same effective SAID. This is the load-bearing correctness argument for the KEL design — without it, the merge engine and gossip layer aren't proven sound. Cross-node convergence as a doctrinal property is stated upstream at [../../../../protocol-doctrine.md §Federation Convergence](../../../../protocol-doctrine.md#federation-convergence); this doc is its per-primitive proof.
 
-For lifecycle prose (states, divergence, recovery via discriminator, contested-state transitions, decommission, the two parallel caps), see [event-log.md](event-log.md). For per-kind field rules and chain shapes, see [events.md](events.md). For the merge engine routing internals, see [merge.md](merge.md). This doc is the proof; the others are the design.
+For lifecycle prose (states, divergence, recovery via discriminator, contested-state transitions, decommission, cap doctrine), see [event-log.md](event-log.md). For per-kind field rules and chain shapes, see [events.md](events.md). For the merge engine routing internals, see [merge.md](merge.md). This doc is the proof; the others are the design.
 
 ## Invariants
 
-All cases below depend on these invariants:
+All cases below depend on these protocol-enforced invariants:
 
 1. **Seal-advance cap compliance**: Every KEL has a seal-advancing event (`rec`, `ror`, or `rot`) at least every `MINIMUM_PAGE_SIZE − 2 = 62` non-seal-advancing events. Surfaced by `KelVerifier` and enforced by the merge engine.
 
-2. **Ror cap compliance**: Every KEL has a recovery-revealing event (`rec`, `ror`, or `dec`) at least every 512 events. Bounds recovery-key-preimage staleness — prevents pure-`rot`-forever operators from running indefinitely on an aging recovery commitment.
+2. **Bounded divergence**: An adversary can only fork after the last seal-advancing event (forking before triggers `ParentLocked`). Combined with invariant 1, divergence spans at most 62 events from the fork point. An adversary holding less than the rotation-key preimage can only submit `ixn`, so the seal-advance cap limits them to at most 62 events before rejection.
 
-3. **Bounded divergence**: An adversary can only fork after the last seal-advancing event (forking before triggers `ParentLocked`). Combined with invariant 1, divergence spans at most 62 events from the fork point. An adversary holding less than the rotation-key preimage can only submit `ixn`, so the seal-advance cap limits them to at most 62 events before rejection.
+3. **Bounded operations**: Recovery batch (`events + rec + rot`) ≤ 64, contested-transition batch (`events + Rot`/`Ror`/`Dec`) ≤ 63, adversary chain to archive ≤ 62. All fit in one `MINIMUM_PAGE_SIZE`-bounded page.
 
-4. **Bounded operations**: Recovery batch (`events + rec + rot`) ≤ 64, contested-transition batch (`events + Rot`/`Ror`/`Dec`) ≤ 63, adversary chain to archive ≤ 62. All fit in one `MINIMUM_PAGE_SIZE`-bounded page.
+Recovery-preimage rotation cadence (how often `Ror` should land) is **operator guidance**, not a protocol-enforced invariant — see [events.md §Cap doctrine](events.md#cap-doctrine). Reconciliation correctness does not depend on a cap on `Rec`/`Ror`/`Dec` frequency.
 
 These invariants are what make synchronous archival, single-page discriminator walks, and atomic batched submissions all feasible. The page+resume-verify discriminator (SEL backport) relies on invariant 4.
 
@@ -59,7 +59,7 @@ The merge engine handles batches atomically:
 
 - **`[events + rec + rot]`** — the surviving chain from the fork point through recovery. At most 64 events (bounded by the seal-advance cap). Processed as a single overlap or divergent submission.
 - **`[events + Rot]`, `[events + Ror]`, or `[events + Dec]`** — the contesting chain from the fork point through contested-transition. At most 63 events. The privileged event must be last in the batch.
-- **`[rot, ixn]` or `[ror, ixn]`** — auto-inserted by the builder when an `ixn` would exceed the seal-advance cap interval. (`rot` is the cheaper choice; `ror` is auto-selected when the Ror cap is also approaching.)
+- **`[rot, ixn]` or `[ror, ixn]`** — auto-inserted by the builder when an `ixn` would exceed the seal-advance cap interval. `rot` is the cheaper choice; `ror` is selected when the operator's recovery-preimage rotation cadence (operator guidance, not protocol-enforced) calls for it.
 
 ## Gossip Sync (transfer_key_events)
 
@@ -313,13 +313,13 @@ Enumeration of concurrent priv-vs-priv races between federation peers, both subm
 | Ror-vs-Ror | Active-sealed (Ror at `v_d`) | `ParentLocked`; non-converging; #205 |
 | Ror-vs-Rot | Active-sealed (Ror/Rot at `v_d`) — contested-creating | `ParentLocked` (and chain contested-terminal on each node via the upgrade rule's local first-receive); non-converging; #205 |
 | Ror-vs-Dec | Active-sealed / Decommissioned | `ParentLocked` / `KelDecommissioned`; non-converging; #205 |
-| Rot-vs-Rot | Active-sealed (Rot at `v_d`) — contested-creating | `ParentLocked` (chain contested-terminal on each node — Rot-vs-Rot race is the new R2 path under #212); non-converging; #205 |
+| Rot-vs-Rot | Active-sealed (Rot at `v_d`) — contested-creating | `ParentLocked` (chain contested-terminal on each node — Rot-vs-Rot race is the rotation-tier adversary path; see [../../../../protocol-doctrine.md §Tier-2 adversary terminal-contestation path](../../../../protocol-doctrine.md#tier-2-adversary-terminal-contestation-path)); non-converging; #205 |
 | Rot-vs-Dec | Active-sealed / Decommissioned | `ParentLocked` / `KelDecommissioned`; non-converging; #205 |
 | Dec-vs-Dec | Decommissioned | `KelDecommissioned`; non-converging; #205 |
 
 The matrix is symmetric in race participants — `Rec-vs-Ror` covers both `Rec` arriving at a node with `Ror` and `Ror` arriving at a node with `Rec`. The receiving-node-state column reflects what the local chain looks like after the local first-receive has landed; the outcome describes the gossip-arriving event's rejection.
 
-The Rot-vs-Rot and Ror-vs-Rot rows are the doctrinal threat-model shift under Rot promotion: a tier-2 adversary (rotation preimage but not recovery preimage) can force contested-terminal by racing `Rot` against an honest concurrent `Rot`/`Ror`. See [../../../../protocol-doctrine.md §Limit of the Doctrine](../../../../protocol-doctrine.md#limit-of-the-doctrine) for the structural framing and [../../../../../analysis/protocol-attack-surface.md §Key Compromise](../../../../../analysis/protocol-attack-surface.md#key-compromise-kel) for the worked threat scenarios.
+The Rot-vs-Rot and Ror-vs-Rot rows are the rotation-tier adversary path: a tier-2 adversary (rotation preimage but not recovery preimage) can force contested-terminal by racing `Rot` against an honest concurrent `Rot`/`Ror`. See [../../../../protocol-doctrine.md §Tier-2 adversary terminal-contestation path](../../../../protocol-doctrine.md#tier-2-adversary-terminal-contestation-path) for the structural framing and [../../../../../analysis/protocol-attack-surface.md §Key Compromise](../../../../../analysis/protocol-attack-surface.md#key-compromise-kel) for the worked threat scenarios.
 
 ## References
 

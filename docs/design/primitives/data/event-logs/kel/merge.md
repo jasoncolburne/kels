@@ -9,7 +9,7 @@ The merge operation integrates new events into an existing KEL while handling:
 - Idempotent resubmissions
 - Divergence detection (conflicting events at the same generation)
 - Recovery from non-privileged divergence (via `Rec`)
-- Contested-state transitions (a privileged event — `Ror` or `Dec` — lands in a divergent set, firing privileged-divergence-is-terminal)
+- Contested-state transitions (a privileged event — `Rot`/`Ror`/`Dec` — lands in a divergent set, firing privileged-divergence-is-terminal)
 
 Events are linked by their `previous` SAID field. Generation is the position in the chain (inception is generation 0), computed by counting `previous` links back to inception.
 
@@ -78,7 +78,7 @@ Events chain directly from the current tip of a non-divergent KEL. Decommissione
 
 ```
 continue KEL verification with submitted events (via KelVerifier::resume from tip)
-check seal-advance cap compliance (≤ 62 non-seal-advancing events between Rec/Ror/Rot) and Ror cap compliance (≤ 512 between Rec/Ror/Dec)
+check seal-advance cap compliance (≤ 62 non-seal-advancing events between Rec/Ror/Rot)
 insert events
 return Accepted
 ```
@@ -91,7 +91,7 @@ Events start from inception (`previous` is `None`) and no KEL exists yet.
 
 ```
 verify events via KelVerifier::new (full verification from inception)
-check seal-advance cap compliance (≤ 62 non-seal-advancing events between Rec/Ror/Rot) and Ror cap compliance (≤ 512 between Rec/Ror/Dec)
+check seal-advance cap compliance (≤ 62 non-seal-advancing events between Rec/Ror/Rot)
 insert events
 return Accepted
 ```
@@ -125,7 +125,7 @@ if batch contains a rec event:
     if existing events advanced the seal in a divergent branch:
         return ParentLocked  // Seal advanced; Rec cannot recover via v_{d-1}
     continue KEL verification with submitted events (from branch tip)
-    check seal-advance cap compliance (≤ 62 non-seal-advancing events between Rec/Ror/Rot) and Ror cap compliance (≤ 512 between Rec/Ror/Dec)
+    check seal-advance cap compliance (≤ 62 non-seal-advancing events between Rec/Ror/Rot)
     check whether the contesting branch contains a seal-advancing event (detailed check via find_adversary_event)
     archive non-surviving branch events
     append all events (surviving branch + rec + optional rot)
@@ -138,7 +138,7 @@ if batch contains a rec event:
 if batch contains a privileged event with previous = v_{d-1}.said:
     if the privileged event is not the last event: return Error("Privileged contest event must be last")
     continue KEL verification with submitted events
-    check seal-advance cap compliance (≤ 62 non-seal-advancing events between Rec/Ror/Rot) and Ror cap compliance (≤ 512 between Rec/Ror/Dec)
+    check seal-advance cap compliance (≤ 62 non-seal-advancing events between Rec/Ror/Rot)
     insert the privileged event as the 3rd event at v_d
     return Contested
         (privileged-divergence-is-terminal fires; chain contested-terminal.)
@@ -156,7 +156,7 @@ Events chain from an earlier point in a non-divergent KEL, creating a potential 
 ```
 divergedAt = branch_point.serial + 1
 continue KEL verification with submitted events (from branch point)
-check seal-advance cap compliance (≤ 62 non-seal-advancing events between Rec/Ror/Rot) and Ror cap compliance (≤ 512 between Rec/Ror/Dec)
+check seal-advance cap compliance (≤ 62 non-seal-advancing events between Rec/Ror/Rot)
 
 // Check if existing events from divergence onward advanced the seal
 if existing events advanced the seal:

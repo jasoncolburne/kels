@@ -149,7 +149,9 @@ The chain-wide `lastIelEvent` (the highest `ielEvent` across all events in the c
 
 ### Soft-fail vs hard-fail policy
 
-Authorization failures in step 4 (cross-chain authorization) are mapped to either a **hard fail** (the verifier returns an error, the chain doesn't advance, the submit handler rejects) or a **soft fail** (the verifier does not return an error and the event remains in the chain, but `policy_satisfied` flips false for the rest of the walk).
+> **Verifier vs merge-engine semantics.** The verifier itself does not reject events — it walks the chain, records anchored/satisfied SAIDs, and surfaces authorization failures via `policy_satisfied = false` on the verification token. "HARD" in this section refers to **merge-engine enforcement against the verifier's output**: when the submit handler runs the verifier under its advisory lock and the resulting `policy_satisfied` (or a kind-specific auth-failure indicator) is false, the merge engine rejects the candidate batch and the new events never land. The verifier-side soft-fail composition is documented in [../../../../protocol-doctrine.md §Verifier and merge are distinct treatments](../../../../protocol-doctrine.md#verifier-and-merge-are-distinct-treatments).
+
+Authorization failures in step 4 (cross-chain authorization) are mapped to either a **hard fail** (merge engine rejects the batch on the verifier's policy-failed output — chain doesn't advance, submit handler rejects) or a **soft fail** (the verifier records the failure on the token but does not advance the branch's per-branch state for the failed event; `policy_satisfied` flips false for the rest of the walk).
 
 **Default: all authorization gates are HARD.** The table below shows that every kind × failure-mode combination is HARD in the normal case. The only exception — soft-fail propagation in the divergent-but-not-yet-contested window — is described in §Post-divergence soft-fail propagation below.
 
@@ -163,7 +165,7 @@ Authorization failures in step 4 (cross-chain authorization) are mapped to eithe
 
 Hard fails leave the chain at its prior tip. The verifier does not advance the branch's tip `ielEvent` on a hard-failing event — only events that hard-pass *all* of fetch / divergence / policy-pick / anchor / parent-monotonic update the per-branch state.
 
-All events require HARD anchor: a `Dec` whose cross-chain anchor check or `IelDivergent` check fails is rejected at the verifier; the chain stays at its prior state. The chain advances iff auth holds.
+All events require HARD anchor (merge-layer): a `Dec` whose cross-chain anchor check or `IelDivergent` check fails causes the verifier to surface a policy failure, and the merge engine rejects the batch; the chain stays at its prior state. The chain advances iff auth holds.
 
 The rationale for HARD anchor on all events: the DB cannot be trusted (see [../../../../protocol-doctrine.md](../../../../protocol-doctrine.md)). An unauthorized event lands in storage as a corrupted state; the verifier should reject it so the chain stays at its actual current state, not a fake-terminal state induced by a forged `Dec`. The "chain stuck at a tip the owner intends to abandon" concern is operator-side and resolved by reincept under a new prefix, not by allowing unauthorized terminals to advance the chain locally. See [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) for the doctrinal frame.
 
@@ -196,7 +198,7 @@ A privileged event (`Sea` or `Dec`) with `previous = v_{d-1}.said` and `serial =
 
 When a node has a non-privileged divergent set at `v_d` (max 2 events: `Upd`-`Upd` race at v ≥ 2; `Est`-`Est` at v=1 is contested-by-construction via privileged-divergence-is-terminal — `Est` is privileged, so an `Est`-`Est` set is contested at first observation without passing through the upgrade rule) and gossip delivers a privileged event for that same `v_d` (`Sea` or `Dec` with `previous = v_{d-1}.said`), the verifier accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to Contested (terminal).
 
-`Rpr` is the archiving exception — its discriminator removes the divergent set before any divergent-set check fires, so it never participates in the upgrade rule (the other privileged kinds — `Sea`, `Dec` — do, when their parent is `v_{d-1}.said`). See [../../../../protocol-doctrine.md §Privileged and archiving event classes](../../../../protocol-doctrine.md#privileged-and-archiving-event-classes) for the doctrinal frame.
+`Rpr` is the archiving exception — its discriminator removes the divergent set before any divergent-set check fires, so it never participates in the upgrade rule (the other privileged kinds — `Sea`, `Dec` — do, when their parent is `v_{d-1}.said`). See [../../../../protocol-doctrine.md §Routing semantics of privileged and archiving kinds](../../../../protocol-doctrine.md#routing-semantics-of-privileged-and-archiving-kinds) for the doctrinal frame.
 
 ### Caller-bounded SAID querying
 
