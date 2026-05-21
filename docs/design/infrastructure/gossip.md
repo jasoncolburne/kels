@@ -57,7 +57,7 @@ The gossip service (`services/gossip`) synchronizes KELs between independent KEL
    - **Delta fetch** (`fetch_kel_since`): requests only events after local state
    - **Audit fetch** (on `NotFound`): local SAID was purged by recovery — fetches with audit to get archived adversary events + clean chain, submits in recovery-aware stages
    - **Full fetch** (fallback): fetches entire KEL when delta fails for other reasons, or when prefix is unknown locally
-   - **Event partitioning**: when events contain multiple divergent branches, adversary events are submitted first, then recovery events, so merge() can properly detect and resolve divergence. Privileged events (`Rot`, `Ror`, `Dec`) that trigger contested-transition are placed in the second batch because they require the divergent set to already be established — the first batch must include the non-privileged fork event so the second batch's privileged event joins via the upgrade rule (or, on a linear chain, lands as a sibling of the existing tip via the divergence-ancestor-extending shape). When fork siblings share the same `previous` and no recovery branch is identifiable, they are submitted as a single batch and `extend()` sorts them by `(serial, kind_priority, said)` to ensure correct ordering.
+   - **Event partitioning**: when events contain multiple divergent branches (non-privileged `Ixn`-`Ixn` on KEL or `Upd`-`Upd` on SEL), adversary events are submitted first, then recovery events, so merge() can properly detect and resolve divergence. Privileged events (`Rot`, `Ror`, `Dec` on KEL; `Sea`, `Dec` on SEL; `Evl`, `Dec` on IEL) whose landing would create or join a divergent set are rejected at the merge layer per [../protocol-doctrine.md §Privileged Divergence is Terminal](../protocol-doctrine.md#privileged-divergence-is-terminal) — partitioning never produces a divergent batch containing a privileged event. Cross-node priv-vs-priv races surface at the federation layer via the contested-prefix table (see [../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../protocol-doctrine.md#concurrent-privileged-event-races)). When fork siblings share the same `previous` and no recovery branch is identifiable, they are submitted as a single batch and `extend()` sorts them by `(serial, kind_priority, said)` to ensure correct ordering.
 5. KELS verifies signatures, merges into local KEL (handles divergence/recovery)
 
 ### Why SAID comparison?
@@ -224,8 +224,8 @@ When a KEL becomes divergent:
 
 1. Both divergent branches propagate via gossip
 2. Receiving node's KELS detects divergence during `merge()`
-3. KEL is in non-privileged-divergent state pending recovery; if a privileged event (`Rot`/`Ror`/`Dec`) joins the divergent set, the chain transitions to Contested via privileged-divergence-is-terminal
-4. Recovery (`Rec`) propagates via gossip and resolves non-privileged divergence by archiving the other branch via the discriminator
+3. KEL is in Divergent state pending recovery; privileged events (`Rot`/`Ror`/`Dec`) whose landing would create or join a divergent set are rejected at the merge layer per [../protocol-doctrine.md §Privileged Divergence is Terminal](../protocol-doctrine.md#privileged-divergence-is-terminal). Cross-node priv-vs-priv races surface at the federation layer via the contested-prefix table.
+4. Recovery (`Rec`) propagates via gossip and resolves the divergence by archiving the other branch via the discriminator
 
 The gossip layer doesn't need special divergence logic - KELS handles all verification and merge semantics.
 

@@ -4,7 +4,7 @@
 
 KELS supports two deployment modes:
 
-- **Standalone** — a single `kels` service + PostgreSQL. No federation, no gossip, no Redis required. Suitable for development, small-scale applications, and environments where a single trusted node is sufficient. All core KEL operations work: inception, rotation, interaction, recovery, decommission, divergence handling, and contested-terminal (reached structurally via privileged-divergence-is-terminal — see [../design/protocol-doctrine.md §Privileged Divergence is Terminal](../design/protocol-doctrine.md#privileged-divergence-is-terminal); not a dedicated event).
+- **Standalone** — a single `kels` service + PostgreSQL. No federation, no gossip, no Redis required. Suitable for development, small-scale applications, and environments where a single trusted node is sufficient. All core KEL operations work: inception, rotation, interaction, recovery, decommission, divergence handling, and merge-layer rejection of priv events whose landing would create or join a divergent set (per [../design/protocol-doctrine.md §Privileged Divergence is Terminal](../design/protocol-doctrine.md#privileged-divergence-is-terminal); no dedicated event).
 
 - **Federated** — a network of registries and gossip nodes that replicate Key Event Logs across the network. Provides high availability, geographic distribution, and multi-party governance. The minimum viable federation requires 3 registries (for consensus quorum) and at least 1 gossip node.
 
@@ -26,7 +26,7 @@ A standalone KELS node requires:
 - `postgres` — event, signature, and SAD Event Log storage
 - `objects` — S3-compatible object storage (RustFS) for SAD content blobs
 
-This provides the full KEL API: event submission, paginated retrieval, divergence detection, recovery, decommission, and structural contested-terminal (privileged-divergence-is-terminal — not a dedicated event). Redis is not required — the kels service runs without caching in standalone mode. When `REDIS_URL` is not set, the service starts without Redis and the `/ready` endpoint returns `{"ready": true, "status": "standalone"}`.
+This provides the full KEL API: event submission, paginated retrieval, divergence detection, recovery, decommission, and merge-layer rejection of priv events whose landing would create or join a divergent set (per [../design/protocol-doctrine.md §Privileged Divergence is Terminal](../design/protocol-doctrine.md#privileged-divergence-is-terminal); no dedicated event). Redis is not required — the kels service runs without caching in standalone mode. When `REDIS_URL` is not set, the service starts without Redis and the `/ready` endpoint returns `{"ready": true, "status": "standalone"}`.
 
 It also provides the full SAD store API: object write, object read, SAD event submission, SEL repair, paginated SEL retrieval.
 
