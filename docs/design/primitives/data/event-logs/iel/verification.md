@@ -19,7 +19,7 @@ Events are linked by their `previous` SAID. Serial is the position in the chain 
 
 Like SEL, IEL has no per-event signature — authorization is via the *anchoring model*: `authPolicy` and `governancePolicy` resolve to KEL prefixes whose `ixn` events anchor the IEL event's SAID. The verifier resolves these policies through a `PolicyChecker` that fetches and verifies the anchoring KEL events on demand.
 
-The verifier answers a single question: **is this chain shape structurally authentic?** Consumer trust ("should I trust authorization claims from this chain?") is a separate concern handled at the auth/policy layer through `policy_satisfied`, soft-fail propagation, and `satisfied_saids` (see [event-log.md §Divergence, Contestation, and the Trust Layer](event-log.md#divergence-contestation-and-the-trust-layer)). The verifier accepts divergent chains as structurally valid regardless of whether the divergence arose from federation race or threshold compromise; the trust layer applies the consumer-side semantics on top of the authenticated data.
+The verifier answers a single question: **is this chain shape structurally authentic?** Consumer trust ("should I trust authorization claims from this chain?") is a separate concern handled at the auth/policy layer through `policy_satisfied`, the federation-level dispute signal (per [event-log.md §Federation Disputes and the Trust Layer](event-log.md#federation-disputes-and-the-trust-layer)), and `satisfied_saids`. IEL chains are linear per-node (Active or Decommissioned); cross-node disagreement from federation races surfaces at the infrastructure layer via the contested-prefix table.
 
 ## Verification Algorithm
 
@@ -54,21 +54,24 @@ verify_event(event):
 
 ### Generation Processing
 
-Events at the same serial form a **generation**. The verifier processes all events in a generation together:
+Events at the same serial form a **generation**. On IEL each generation contains exactly one event (linear chain). The verifier processes generations sequentially:
 
 ```
 verify_generation(events_at_serial):
-    if events_at_serial.len() > branches.len():
-        // More events than branches = divergence detected
-        fork BranchState for new branches
-        record divergenceAncestor (the SAID of v_{d-1}) if first divergence
+    if events_at_serial.len() > 1:
+        // Structural error: divergent sets cannot form locally on IEL.
+        // The merge layer rejects any second event at the same serial per
+        // [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal).
+        // If the verifier walk observes two events at the same serial in
+        // storage, the chain has been tampered with at the storage layer;
+        // return a structural integrity error.
+        return Error("Divergent set in IEL storage")
 
-    for each event:
-        match to branch via event.previous
-        verify policy satisfaction for that branch
+    event = events_at_serial[0]
+    verify policy satisfaction for the chain
 ```
 
-Maximum 2 events per generation. v0 divergence is rejected outright.
+v0 divergence is rejected outright (inception is fully deterministic).
 
 ### Policy Resolution
 
@@ -112,15 +115,12 @@ Policy state is **branch-tracked**. Two fields:
 All events on IEL require HARD anchor (merge-layer): a `Dec` whose governance check fails is rejected by the merge engine; the chain stays at its prior state. Structural integrity rules — SAID validity, serial monotonicity, immunity check on policy evolution — stay HARD as well.
 
 The verifier's terminal-state-determination rule on IEL is structural:
-- Divergent at `v_d`? **Yes → contested (terminal).** Every IEL event is privileged, so any divergent set on IEL contains a privileged event by construction; privileged-divergence-is-terminal fires at first 2-event observation. The "divergent-but-not-yet-contested" intermediate state doesn't arise on IEL; it exists for KEL (non-privileged Ixn-Ixn divergence, recoverable via `Rec`) and SEL (non-privileged Upd-Upd divergence at v ≥ 2, recoverable via `Rpr`).
 - Linear with a `Dec` event present? Decommissioned (terminal-via-Dec).
 - Linear without `Dec`? Active.
 
-### Contested-state derivation
+There is no Divergent state on IEL: every IEL event is privileged, and the merge layer rejects any second event at the same serial per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). Cross-node priv-vs-priv races surface at the federation layer via the contested-prefix table rather than as a per-node verifier-state. If the verifier walk observes two events at the same serial in storage, that is a structural integrity error (storage-layer tampering), not a Divergent state.
 
-On IEL, the contested chain state is derived structurally from divergence: `is_contested ⇔ is_divergent`. Every IEL event is privileged, so the verifier sets `is_contested = true` whenever it observes a divergent set. Both accessors are exposed for cross-primitive API symmetry with KEL and SEL — `is_contested()` wraps `is_divergent()` on IEL. On KEL and SEL the two diverge: a non-privileged divergent set is `is_divergent` without being `is_contested` until a privileged event joins via the upgrade rule.
-
-The handler-level rejection on contested/decommissioned chains is a separate seam that prevents new submits; this verifier-level mechanism handles events that reach the verifier some other way (gossip-pulled chains where the local node hadn't yet observed the terminal, resume from a stored chain that contains a terminal).
+The handler-level rejection on decommissioned chains is a separate seam that prevents new submits; this verifier-level rule handles chains that reach the verifier via gossip or backup-restore paths.
 
 ### Caller-bounded SAID querying
 
@@ -128,9 +128,9 @@ The chain-wide `policy_satisfied: bool` answers "is the chain currently authorit
 
 - Caller provides `queried_saids: BTreeSet<Digest256>` up-front — the IEL event SAIDs the caller cares about.
 - During the chain walk, for each event whose SAID appears in `queried_saids`:
-  - If the event is at-or-below `lastSealAdvancingEvent` AND on the pre-divergence shared portion of the chain (or the chain is non-divergent) AND auth-passed, the verifier adds the SAID to `satisfied_saids`.
+  - If the event is at-or-below `lastSealAdvancingEvent` AND auth-passed, the verifier adds the SAID to `satisfied_saids`.
   - The verifier snapshots the event's tracked `(authPolicy, governancePolicy)` into a SAID-keyed map, available post-verification via `auth_policy_at(said)` / `governance_policy_at(said)`.
-- For events NOT in `queried_saids`, the verifier still performs anchor checks during the walk (chain-validity requires it) but does not retain per-event policy state — branch state's running `trackedAuthPolicy` / `trackedGovernancePolicy` is sufficient for in-flight checks. No snapshot is kept post-verification; `auth_policy_at(said)` / `governance_policy_at(said)` return `None` for any SAID outside `queried_saids`.
+- For events NOT in `queried_saids`, the verifier still performs anchor checks during the walk (chain-validity requires it) but does not retain per-event policy state — chain state's running `trackedAuthPolicy` / `trackedGovernancePolicy` is sufficient for in-flight checks. No snapshot is kept post-verification; `auth_policy_at(said)` / `governance_policy_at(said)` return `None` for any SAID outside `queried_saids`.
 
 The pattern is bounded by what the caller asks about, not by chain size — verification doesn't accumulate the universe of chain SAIDs or the universe of per-event policy state. The SEL verifier collects `ielEvent` references from its own chain walk in a pre-pass, passes them as `queried_saids` to the IEL verification, and uses `is_said_satisfied` + `auth_policy_at` / `governance_policy_at` to resolve each binding. Same shape as KEL's `is_said_anchored`. Token memory is `O(|queried_saids|)`, not `O(chain length)`. Callers that need post-hoc resolution for SAIDs they didn't declare go through `IelResolver` directly.
 
@@ -141,29 +141,24 @@ The pattern is bounded by what the caller asks about, not by chain size — veri
 ```
 IelVerification:
     prefix: Digest256
-    branches: Vec<BranchTip>                 // 1 = linear, 2 = divergent
-    divergenceAncestor: Option<Digest256>   // SAID of v_{d-1} on a divergent chain (None on linear)
-    is_contested: bool                       // derived: branches.len() > 1 (equivalent to is_divergent on IEL)
+    branches: Vec<BranchTip>                 // always 1 (linear)
     is_decommissioned: bool
     lastSealAdvancingEvent: Option<Digest256> // SAID of most recent Evl
     queried_saids: BTreeSet<Digest256>       // caller-declared SAIDs of interest
-    satisfied_saids: BTreeSet<Digest256>     // verifier-populated subset (auth-passed, at-or-below-seal, pre-divergence)
+    satisfied_saids: BTreeSet<Digest256>     // verifier-populated subset (auth-passed, at-or-below-seal)
     // policy_history: BTreeMap<Digest256, (Digest256, Digest256)> — caller-bounded by queried_saids
 ```
 
 Accessors:
 
-- `current_event()` → `None` if divergent
+- `current_event()` → the chain's tip event
 - `prefix()`
 - `auth_policy_at(event_said)` — SAID of the `authPolicy` tracked at the named IEL event, IF `event_said` was pre-declared in `queried_saids`. Returns `None` for SAIDs outside `queried_saids` (caller-bounded; see §Caller-Bounded SAID Querying). Used by SEL verification to resolve `ielEvent` bindings.
 - `governance_policy_at(event_said)` — same, for governancePolicy.
 - `policy_satisfied()` — overall policy satisfaction across the chain.
 - `lastSealAdvancingEvent()` — SAID of the most recent `Evl` (the evaluation seal).
-- `divergenceAncestor()` — SAID of `v_{d-1}` on a divergent chain (`None` on linear).
-- `is_divergent()` — `branches.len() > 1`.
-- `is_contested()` — equivalent to `is_divergent()` on IEL; wraps it for cross-primitive API symmetry (see §Contested-state derivation above).
-- `is_decommissioned()` — `true` when the linear branch tip is a `Dec` event (a contested chain is not also decommissioned — divergence is contested-terminal on IEL by privileged-divergence-is-terminal, so no subsequent `Dec` can land on a contested chain).
-- `effective_tail_said()` — deterministic per-prefix SAID used for cross-node convergence. Single branch (active or terminal-via-Dec): tip event SAID. Contested (= divergent): `hash_effective_said("contested:{prefix}")`. None for the empty chain. Mirrors KEL's contested shape per `lib/kels/src/types/kel/verification.rs:142-158`; the KEL "divergent, not-yet-contested" branch has no IEL analog because divergent IEL is always contested.
+- `is_decommissioned()` — `true` when the linear chain tip is a `Dec` event.
+- `effective_tail_said()` — deterministic per-prefix SAID used for cross-node convergence. Single branch (Active or Decommissioned-via-Dec): tip event SAID. None for the empty chain.
 
 ## Key Properties Verified
 
@@ -184,25 +179,22 @@ Note: There is no content-preservation rule (IEL has no `content` field). There 
 
 ## Divergence Handling
 
-Verification does NOT fail on divergence. Instead:
-- Divergence is detected and tracked in the `IelVerification` token (`is_divergent()`, `divergenceAncestor()`, `is_contested()` — all equivalent on IEL).
-- Both branches of a divergent chain are verified independently (the verifier forks `BranchState` per branch).
-- Divergence is contested-terminal on IEL by the privileged-divergence-is-terminal rule (every IEL event is privileged); there is no `Rpr` to resolve it. The chain stays divergent forever as forensic record; the operator's recourse is reincept under a new prefix. See [merge.md §Terminal-State Gate](merge.md#2-terminal-state-gate).
+Per-node IEL chains are linear (Active or Decommissioned). Divergent sets cannot form locally on IEL — the merge layer rejects any second event at the same serial per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). If the verifier walk observes two events at the same serial in storage, that is a structural integrity error (storage-layer tampering); the verifier returns an error.
+
+Cross-node priv-vs-priv races surface at the federation layer via the contested-prefix table (see [event-log.md §Federation Disputes and the Trust Layer](event-log.md#federation-disputes-and-the-trust-layer)) — not as a per-node verifier state.
 
 ## Streaming
 
-IEL verification follows the cross-primitive streaming pattern (see [../../../../protocol-doctrine.md §Streaming](../../../../protocol-doctrine.md#streaming)). Verifier type: `IelVerifier`. Proof-of-verification token: `IelVerification`. Per-IEL specifics: every IEL event is governance-authorized so divergent sets are immediately contested-terminal at first 2-event observation — branches max out at 2 in the divergent case but the chain never returns to a single-tip recovered state on IEL (no `Rpr`); the verifier resolves policy satisfaction via a `PolicyChecker` against the bound KEL anchors; caller-bounded SAID querying against `queried_saids` mirrors KEL's inline anchor checking.
+IEL verification follows the cross-primitive streaming pattern (see [../../../../protocol-doctrine.md §Streaming](../../../../protocol-doctrine.md#streaming)). Verifier type: `IelVerifier`. Proof-of-verification token: `IelVerification`. Per-IEL specifics: IEL chains are linear per-node (every IEL event is privileged, so divergent sets cannot form locally per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal)); the verifier resolves policy satisfaction via a `PolicyChecker` against the bound KEL anchors; caller-bounded SAID querying against `queried_saids` mirrors KEL's inline anchor checking.
 
-`IelVerifier` walks forward through events page by page, verifying integrity and policy satisfaction without loading the full chain into memory. It supports both linear and divergent chains by tracking per-branch state.
+`IelVerifier` walks forward through events page by page, verifying integrity and policy satisfaction without loading the full chain into memory.
 
 ```
 struct IelVerifier {
     prefix: Digest256,
     checker: Arc<dyn PolicyChecker>,
-    branches: HashMap<Digest256, BranchState>,   // keyed by tip SAID
+    chain_state: BranchState,                    // single linear chain
     last_verified_serial: Option<u64>,
-    divergenceAncestor: Option<Digest256>,
-    is_contested: bool,                          // derived: branches.len() > 1 (equivalent to is_divergent on IEL)
     is_decommissioned: bool,
     ...
 }
