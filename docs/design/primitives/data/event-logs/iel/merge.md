@@ -133,7 +133,7 @@ if event is at-or-before `lastSealAdvancingEvent` in chain order
    → return ParentLocked { reason: "..." }
 ```
 
-This fires when a write-authorized normal event would land at or before the evaluation seal — meaning the seal has advanced past the submitter's view of the chain. The submitter has authority but cannot proceed via normal append; they must accept the new state and re-submit at a higher serial, contest, or abandon.
+This fires when a write-authorized normal event would land at or before the evaluation seal — meaning the seal has advanced past the submitter's view of the chain. The submitter has authority but cannot proceed via normal append; they must accept the new state and re-submit at a higher serial, decommission via `Dec`, or abandon and reincept.
 
 (For IEL, "policy is satisfied" means the event's anchor passes against `trackedGovernancePolicy` — every IEL event including `Icp` is governance-authorized; `Icp` is self-endorsed under its declared policy.)
 

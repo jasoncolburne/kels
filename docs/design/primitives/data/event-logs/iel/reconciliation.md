@@ -71,7 +71,7 @@ Each cell describes what happens when gossip syncs a chain from a source node (r
 
 | Source | Sink: Empty | Sink: Active | Sink: Active (other branch authored) | Sink: Decommissioned |
 |--------|-------------|--------------|--------------------------------------|----------------------|
-| **Active** | Full chain appended ✓ | Duplicates, no-op ✓ | Priv-event-extending-`v_{d-1}` rejected at merge per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal); federation-layer dispute via irreconcilable-prefix table | `IelDecommissioned` |
+| **Active** | Full chain appended ✓ | Duplicates, no-op ✓ | Priv-event-extending-`v_{d-1}` rejected at merge per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal); federation-layer dispute vian irreconcilable-prefix table | `IelDecommissioned` |
 | **Decommissioned** | Full chain (incl. `Dec`) appended ✓ | `Dec` batch → decommission ✓ | `IelDecommissioned` (concurrent priv-event race resolves at infrastructure layer per #205) | Effective SAIDs match; no-op |
 
 ### Notes on cell routing
@@ -242,7 +242,7 @@ Gossip propagates:
     A ≠ B → federation does not converge at the protocol layer.
 ```
 
-Federation-level convergence in this scenario is provided at the infrastructure layer via a irreconcilable-prefix table that nodes maintain and gossip-sync; see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205) for the design. The seal-cap stays unconditional; relaxing it to admit competing events at a sealed serial would re-open a stale-authority killswitch surface.
+Federation-level convergence in this scenario is provided at the infrastructure layer via an irreconcilable-prefix table that nodes maintain and gossip-sync; see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205) for the design. The seal-cap stays unconditional; relaxing it to admit competing events at a sealed serial would re-open a stale-authority killswitch surface.
 
 ## Race matrix
 

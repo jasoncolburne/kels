@@ -149,7 +149,7 @@ rejected with `ParentLocked` (seal-cap).
 
 ### 2. Multiple competing events injected across nodes
 
-Different events at the same serial are submitted to different nodes (federation race or threshold compromise — chain-indistinguishable). When gossip syncs, divergence is created. Only one extra event is written per overlap (the fork event). Recovery or contest resolves it. All nodes converge after recovery propagates via gossip.
+Different events at the same serial are submitted to different nodes (federation race or threshold compromise — chain-indistinguishable). When gossip syncs, divergence is created. Only one extra event is written per overlap (the fork event). Recovery resolves it. All nodes converge after recovery propagates via gossip.
 
 ```
 Pre-state (linear at s_{d-1}, replicated to nodes A and B):
@@ -268,7 +268,7 @@ Gossip propagates:
     A ≠ B → federation does not converge at the protocol layer.
 ```
 
-Federation-level convergence in this scenario is provided at the infrastructure layer via a irreconcilable-prefix table that nodes maintain and gossip-sync; see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205) for the design. The seal-cap stays unconditional; relaxing it to admit competing events at a sealed serial would re-open a stale-authority killswitch surface.
+Federation-level convergence in this scenario is provided at the infrastructure layer via an irreconcilable-prefix table that nodes maintain and gossip-sync; see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205) for the design. The seal-cap stays unconditional; relaxing it to admit competing events at a sealed serial would re-open a stale-authority killswitch surface.
 
 ## Race matrix
 

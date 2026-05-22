@@ -164,7 +164,7 @@ s5_c     Dec with previous = s_4.said                              (a second rec
   Node B receives Rec_b: Rec_b.parent_serial = 4 < seal_serial = 5 → rejected by seal-cap.
 ```
 
-Each node retains its locally-landed first-receive. The seal-cap rejects each peer's gossip-arriving submission unconditionally — no boundary case admits competing privileged events at a sealed serial. Federation-level convergence in this scenario is provided at the infrastructure layer via a irreconcilable-prefix table that nodes maintain and gossip-sync; see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205).
+Each node retains its locally-landed first-receive. The seal-cap rejects each peer's gossip-arriving submission unconditionally — no boundary case admits competing privileged events at a sealed serial. Federation-level convergence in this scenario is provided at the infrastructure layer via an irreconcilable-prefix table that nodes maintain and gossip-sync; see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205).
 
 ### Clean decommission
 

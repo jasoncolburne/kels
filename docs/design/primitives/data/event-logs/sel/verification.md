@@ -359,7 +359,7 @@ The validation rules above apply identically at submit, gossip ingestion, bootst
 
 ## References
 
-- [event-log.md](event-log.md) — Chain lifecycle, repair, contest, decommission.
+- [event-log.md](event-log.md) — Chain lifecycle, repair, decommission.
 - [merge.md](merge.md) — Submit-handler routing.
 - [reconciliation.md](reconciliation.md) — Multi-node correctness matrix.
 - [events.md](events.md) — Per-kind structural rules.

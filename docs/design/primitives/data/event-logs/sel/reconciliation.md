@@ -171,7 +171,7 @@ and [#205](https://github.com/jasoncolburne/kels/issues/205)).
 
 ### 2. Multiple adversary injections across nodes
 
-Adversary injects different events to different nodes. When gossip syncs, divergence is created at one or more nodes. The first divergent event at each serial is stored; subsequent ones are dedup-rejected. Repair (or contest) resolves it. All nodes converge after the resolution propagates.
+Adversary injects different events to different nodes. When gossip syncs, divergence is created at one or more nodes. The first divergent event at each serial is stored; subsequent ones are dedup-rejected. Repair resolves it. All nodes converge after the resolution propagates.
 
 ```
 Pre-state (linear at v_{d-1}, replicated to nodes A and B):
@@ -405,7 +405,7 @@ Gossip propagates:
     A ≠ B → federation does not converge at the protocol layer.
 ```
 
-Federation-level convergence in this scenario is provided at the infrastructure layer via a irreconcilable-prefix table that nodes maintain and gossip-sync; see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205) for the design. The seal-cap stays unconditional; relaxing it to admit competing events at a sealed serial would re-open a stale-authority killswitch surface.
+Federation-level convergence in this scenario is provided at the infrastructure layer via an irreconcilable-prefix table that nodes maintain and gossip-sync; see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205) for the design. The seal-cap stays unconditional; relaxing it to admit competing events at a sealed serial would re-open a stale-authority killswitch surface.
 
 ## Race matrix
 

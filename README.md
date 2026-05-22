@@ -1,8 +1,11 @@
 # KELS - Key Event Log System
 
+**This repo is under construction and will change in name. The eventual home will be
+[https://github.com/jasoncolburne/vdti](https://github.com/jasoncolburne/vdti).**
+
 KELS is a federated **Decentralized Verifiable Trust Infrastructure (DVTI)**, inspired by [KERI](https://github.com/WebOfTrust/keripy). The system composes three primitive chain types — **Key Event Logs** (KEL, the original primitive that gives the project its name), **Identity Event Logs** (IEL), and **SAD Event Logs** (SEL) — into a layered design for cryptographically verifiable identity, governance, and data management. Events are self-addressing (content-addressed via SAID) and cryptographically signed; the entire system is tamper-evident and end-verifiable.
 
-For the full design — the doctrine, the per-primitive specifications, and the features and infrastructure built on top — start with [docs/design/reading-guide.md](docs/design/reading-guide.md). **Note**: Design is currently in flux and not guaranteed to be correct. I've worked to try and ensure the primitives/doctrine are well fleshed out, but it needs more review and the features and infrastructure designs are about to undergo many changes.
+For the full design — the doctrine, the per-primitive specifications, and the features and infrastructure built on top — start with [docs/design/reading-guide.md](docs/design/reading-guide.md). Design is currently ahead of implementation.
 
 ## Why a DVTI?
 

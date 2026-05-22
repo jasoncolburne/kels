@@ -2,7 +2,7 @@
 
 Pure structural reference for SAD Event Log (SEL) event kinds, per-kind field rules, and typical chain shapes. SELs are **identity-rooted**: every SEL binds at inception to an Identity Event Log (IEL) and resolves its authorization policies through that IEL — SEL has no `authPolicy` or `governancePolicy` fields of its own (those live on IEL; see [../iel/events.md](../iel/events.md)).
 
-**What this doc covers:** per-kind field rules, prefix derivation, the inception batch rule, camping defense, the cross-chain binding to IEL, content semantics, and the evaluation bound. For chain lifecycle (states, divergence, repair, contest, decommission), see [event-log.md](event-log.md); for storage and API, see [../../../../infrastructure/sadstore.md](../../../../infrastructure/sadstore.md).
+**What this doc covers:** per-kind field rules, prefix derivation, the inception batch rule, camping defense, the cross-chain binding to IEL, content semantics, and the evaluation bound. For chain lifecycle (states, divergence, repair, decommission), see [event-log.md](event-log.md); for storage and API, see [../../../../infrastructure/sadstore.md](../../../../infrastructure/sadstore.md).
 
 ## Event Kinds
 

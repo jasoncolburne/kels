@@ -184,7 +184,7 @@ if event is at-or-before `lastSealAdvancingEvent` in chain order
    → return ParentLocked { reason: "..." }
 ```
 
-This fires when an authorized non-terminal event would land at or before the evaluation seal — meaning the seal has advanced past the submitter's view of the chain (someone with governance authority issued a `Sea`/`Rpr` while the submitter had stale state). The submitter has authority but cannot proceed via normal append; they must accept, contest, or abandon.
+This fires when an authorized non-terminal event would land at or before the evaluation seal — meaning the seal has advanced past the submitter's view of the chain (someone with governance authority issued a `Sea`/`Rpr` while the submitter had stale state). The submitter has authority but cannot proceed via normal append; they must accept the new state, decommission via `Dec`, or abandon and reincept.
 
 "Kind-relevant authorization" means each kind's gate uses the appropriate IEL-resolved policy: `Upd` checks `authPolicy`; `Sea` checks `governancePolicy`. Both kinds use the same algorithmic `ParentLocked` gate here — what differs is which policy the §1 check ran against.
 
