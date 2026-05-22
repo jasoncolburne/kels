@@ -213,3 +213,15 @@ security-invariant\.md
 \bidentity_event\b
 \blast_identity_event\b
 \btip_identity_event\b
+
+# ============================================================================
+# §Doc-only — #206: ContestRequired → ParentLocked
+# ============================================================================
+# Design renamed `ContestRequired` (merge result / error variant) to
+# `ParentLocked` for clarity. Action-oriented "contest" framing no longer
+# matches #214 doctrine (per-node Contested removed; contestation is
+# federation-layer only via #205). Code rename queued as #206; design is
+# canonical and forbids the old name in docs/prose now (root lint stays
+# permissive until code rename lands).
+
+\bContestRequired\b

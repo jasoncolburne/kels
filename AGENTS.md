@@ -86,9 +86,9 @@ use crate::{handlers::AppState, repository::KelsRepository};
 
 **Divergence** — conflicting events at the same serial. Chain transitions to Divergent (recoverable via `Rec`/`Rpr` when non-privileged) or directly to Contested (terminal — when the divergent set contains a privileged event, per privileged-divergence-is-terminal). See `docs/design/primitives/data/event-logs/kel/event-log.md`, `docs/design/primitives/data/event-logs/kel/recovery-workflow.md`, `docs/design/primitives/data/event-logs/kel/reconciliation.md`.
 
-**Effective SAID** — tip SAID for normal chains; `hash_effective_said("divergent:{prefix}")` for divergent; `hash_effective_said("contested:{prefix}")` for contested. See `docs/design/primitives/data/event-logs/kel/merge.md`.
+**Effective SAID** — tip SAID for normal chains (including decommissioned); `hash_effective_said("divergent:{prefix}")` for divergent; `hash_effective_said("contested:{prefix}")` for contested. Under #214 the contested-prefix surface is federation-layer-sourced (per #205), not per-node-state-derived — the service returns the synthetic in the response when it knows the prefix is contested. See `docs/design/primitives/data/event-logs/kel/merge.md`.
 
-**Merge results**: Accepted, Recovered, Contested, Diverged, RecoverRequired, ContestRequired.
+**Merge results**: Accepted, Recovered, Diverged, RecoverRequired, ParentLocked.
 
 **Policy** — DSL for authorization: `endorse(PREFIX)`, `identity(PREFIX)`, `delegate(DELEGATOR)`, `threshold(MIN, [NODES])`, `weighted(MIN_WEIGHT, [NODE:W])`, `policy(SAID)` nesting; per-policy `poison` / `immune` modes. `delegate(DELEGATOR)` is the open form — the specific delegate is discovered at policy-evaluation time. See `docs/design/features/policy.md`.
 
