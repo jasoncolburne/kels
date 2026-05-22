@@ -167,7 +167,7 @@ observes overlap at s_d and writes the second event as the fork
 event (one extra event per overlap, dedup-rejection on subsequent
 submissions at the same serial):
 
-  Both nodes:  s_0 → ... → s_{d-1} ─┬─ ixn_a @ s_d   (non-priv divergent)
+  Both nodes:  s_0 → ... → s_{d-1} ─┬─ ixn_a @ s_d   (divergent)
                                     └─ ixn_b @ s_d
 
 A recovery-key holder submits rec to any single node → discriminator

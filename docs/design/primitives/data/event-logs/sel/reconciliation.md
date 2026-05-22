@@ -186,7 +186,7 @@ Adversary submits different Upd events to different nodes:
 Gossip propagates. Each node observes overlap at v_d and writes the
 incoming event as the second fork event:
 
-  Both nodes:  [Icp] → ... → [Upd_{d-1}] ─┬─ Upd_a @ v_d   (non-priv divergent)
+  Both nodes:  [Icp] → ... → [Upd_{d-1}] ─┬─ Upd_a @ v_d   (divergent)
                                           └─ Upd_b @ v_d
 
 Operator submits Rpr (governance-authorized via bound IEL) extending

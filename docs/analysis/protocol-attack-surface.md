@@ -82,7 +82,7 @@ A controller of a KEL identity has three keys to protect. Clients should be depl
 - **Attack:** Adversary can sign `ixn` events (anchor arbitrary data) and submit them to any KELS node.
 - **Impact:** Limited to interaction events. Cannot rotate keys, cannot take over the identity.
 - **Recovery:** Owner rotates signing key (`rot`). If the adversary submits conflicting events before rotation propagates, divergence occurs. Owner submits `rec` (requires rotation + recovery key, dual-signed); the discriminator archives the other branch. KEL resumes normally.
-- **Detection:** Divergence is detected automatically when two events share the same `previous` SAID. The chain transitions to **Divergent (non-privileged)** for `Ixn`-`Ixn` races, recoverable via `rec`.
+- **Detection:** Divergence is detected automatically when two events share the same `previous` SAID. The chain transitions to **Divergent** for `Ixn`-`Ixn` races, recoverable via `rec`.
 
 **Rotation key compromised (signing + rotation preimage, no recovery preimage):**
 - **Attack:** Adversary holding the rotation-key preimage can submit a `rot` event (taking over the signing key) and subsequently sign `ixn` events under the new signing key. The adversary cannot forge `Rec`/`Ror`/`Dec` (those require the recovery-key preimage too).
@@ -150,8 +150,8 @@ The "Rotation key compromised" subsection above covers the tier-2 adversary in f
 
 ### Divergence Flooding
 
-**Attack:** With a compromised signing key, submit divergent events to many different KELS nodes simultaneously, hoping to maximize the window where the KEL is in non-privileged-divergent state pending recovery.
-- **Mitigation:** Gossip propagates both branches of a divergent KEL. All nodes converge on the same divergent state (cross-node SAID consistency via `hash_effective_said("divergent:{prefix}")` — see [Federation convergence pillar](#trust-model) and [../design/protocol-doctrine.md §Federation Convergence](../design/protocol-doctrine.md#federation-convergence)). The owner can submit `rec` to any single node, and recovery propagates via gossip to all nodes. The post-divergence window is bounded structurally by the seal-advance cap (62 non-seal-advancing events between `Rec`/`Ror`/`Rot`) — non-privileged-divergent chains cannot extend more than 62 events before requiring a seal-advancing event.
+**Attack:** With a compromised signing key, submit divergent events to many different KELS nodes simultaneously, hoping to maximize the window where the KEL is in Divergent state pending recovery.
+- **Mitigation:** Gossip propagates both branches of a divergent KEL. All nodes converge on the same divergent state (cross-node SAID consistency via `hash_effective_said("divergent:{prefix}")` — see [Federation convergence pillar](#trust-model) and [../design/protocol-doctrine.md §Federation Convergence](../design/protocol-doctrine.md#federation-convergence)). The owner can submit `rec` to any single node, and recovery propagates via gossip to all nodes. The post-divergence window is bounded structurally by the seal-advance cap (62 non-seal-advancing events between `Rec`/`Ror`/`Rot`) — divergent chains cannot extend more than 62 events before requiring a seal-advancing event.
 - **Residual risk:** Window of divergent KEL depends on gossip propagation speed and owner response time.
 
 ### Recovery Race

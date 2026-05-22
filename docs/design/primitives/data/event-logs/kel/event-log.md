@@ -55,7 +55,7 @@ The seal-cap rule is unconditional on KEL: a new event's parent must sit at-or-a
 Divergence is detected when two events share the same `previous` SAID. The chain transitions per the privileged-divergence rule:
 - If the divergent set contains an archiving event (`Rec`) — the discriminator runs first; one branch is archived; chain stays linear post-discriminator. (Archiving-precedence routes around the divergent-set check.)
 - If the candidate event is privileged (`Rot`, `Ror`, or `Dec`) and its acceptance would create or join a divergent set — the merge layer rejects the submission. The chain's prior state stands.
-- If the divergent set is non-privileged (only `Ixn` events) — to **Divergent**, recoverable via `Rec`.
+- Otherwise (the divergent set contains only `Ixn` events) — chain enters **Divergent** state, recoverable via `Rec`.
 
 s0 divergence is rejected outright — inception is fully deterministic; two distinct s0 events for the same prefix indicate protocol-level corruption, not authority conflict.
 
@@ -74,12 +74,12 @@ Federation-level convergence is provided by the irreconcilable-prefix table at t
 
 ## Recovery (Rec)
 
-Recovery resolves a non-privileged-divergent chain by archiving all events at `serial >= divergedAt` not on `Rec.previous`'s walkback, then appending the `Rec` (and optionally a follow-up `Rot`). `Rec.previous` takes one of two shapes:
+Recovery resolves a divergent chain by archiving all events at `serial >= divergedAt` not on `Rec.previous`'s walkback, then appending the `Rec` (and optionally a follow-up `Rot`). `Rec.previous` takes one of two shapes:
 
 1. **Branch-tip-extending shape — `Rec.previous` is a branch tip at `v_d`.** Rec extends that branch at `v_{d+1}`. The discriminator's walkback from `Rec.previous` reaches the surviving-branch tip at `v_d`; events on the other branch are archived. Use case: the submitter chooses one of the two branches at `v_d` as the surviving branch; Rec extends it.
 
    ```
-   Pre-state (non-priv divergent at v_d):
+   Pre-state (divergent at v_d):
        ... → v_{d-1} ─┬─ surviving-branch tip @ v_d
                       └─ other-branch tip     @ v_d
 
@@ -95,7 +95,7 @@ Recovery resolves a non-privileged-divergent chain by archiving all events at `s
 2. **Divergence-ancestor-extending shape — `Rec.previous` is `v_{d-1}` (the divergence ancestor).** Rec lands at `v_d`. The discriminator's walkback from `Rec.previous` stops immediately (serial drops below `divergedAt`); all events at `serial >= d` (both branches) are archived. Rec is the only event at `v_d` after the discriminator runs. Use case: the submitter does not preserve either of the existing branches at `v_d` and instead replaces `v_d` entirely with their own Rec extending `v_{d-1}`.
 
    ```
-   Pre-state (non-priv divergent at v_d):
+   Pre-state (divergent at v_d):
        ... → v_{d-1} ─┬─ branch-1 tip @ v_d
                       └─ branch-2 tip @ v_d
 
@@ -108,7 +108,7 @@ Recovery resolves a non-privileged-divergent chain by archiving all events at `s
                      both prior branches archived
    ```
 
-   The divergence-ancestor-extending shape's "both branches" archival is exhaustive by construction: divergent sets contain only non-privileged events (the merge layer rejects privileged events that would create or join a divergent set per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal)). Rec applies only to the 2-event non-privileged divergent sets at `v_d`.
+   The divergence-ancestor-extending shape's "both branches" archival is exhaustive by construction: divergent sets contain only non-privileged events (the merge layer rejects privileged events that would create or join a divergent set per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal)). Rec applies only to the 2-event divergent sets at `v_d`.
 
 The Rec submitter (whoever holds the recovery key) dictates which shape, and (in the branch-tip-extending shape) which branch Rec extends. Both shapes are handled uniformly by `archive_adversary_chain` — the walkback structure determines which events get archived without a separate code path per shape.
 
@@ -186,7 +186,7 @@ Recovery-preimage rotation cadence (how often `Ror` should land between recovery
 A KEL rejects a privileged event (`Rot`, `Ror`, or `Dec`) at the merge layer when the event's landing would create or join a divergent set per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). Two shapes reach this rejection:
 
 - **On a linear chain** with an existing event at `v_d`, a privileged event with `previous = v_{d-1}.said` would land as a sibling and create a 2-event divergent set containing a privileged event. Rejected at merge.
-- **On an already-divergent chain**, a privileged event with `previous = v_{d-1}.said` would join the existing non-privileged divergent set. Rejected at merge.
+- **On an already-divergent chain**, a privileged event with `previous = v_{d-1}.said` would join the existing divergent set. Rejected at merge.
 
 In both cases the merge layer returns a `ParentLocked`-equivalent rejection; the chain's prior state stands. Cross-node priv-vs-priv races (each event landing cleanly on its submitting node, gossip-arriving competing event rejected by the seal-cap) surface at the federation layer via the irreconcilable-prefix table (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races)).
 
