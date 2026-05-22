@@ -61,7 +61,7 @@ There is no `[..., Rpr]` batch — IEL has no `Rpr` kind.
 
 ## Gossip Sync
 
-When chain state transitions, the submit handler publishes the new effective SAID for gossip. Peers compare their local effective SAID against the announcement and fetch the full chain from origin if stale. The receiving handler routes via the same per-event flow used for direct submissions (`Dec` → decommissioned; priv event whose landing would create or join a divergent set → rejected with `ParentLocked`-equivalent).
+When chain state transitions, the submit handler publishes the new effective SAID for gossip. Peers compare their local effective SAID against the announcement and fetch the full chain from origin if stale. The receiving handler routes via the same per-event flow used for direct submissions (`Dec` → decommissioned; priv event whose landing would create or join a divergent set → rejected with `ParentLocked`).
 
 IEL chains are linear per-node (Active or Decommissioned). The source sends a single full-chain stream that the sink applies as a normal append. Cross-node priv-vs-priv races surface via the irreconcilable-prefix table at the federation layer rather than as in-protocol partitioning. See [merge.md §Gossip propagation](merge.md#gossip-propagation).
 

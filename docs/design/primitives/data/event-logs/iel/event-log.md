@@ -396,7 +396,7 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 | State observed | Batch content | Outcome |
 |---|---|---|
 | Linear, normal append | `Evl` (clean linear extension of the current tip) | Append. Seal advances. |
-| Linear, overlap | competing `Evl` or `Dec` extending `v_{d-1}` while an event exists at `v_d` | Rejected at merge per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). `ParentLocked`-equivalent. Cross-node priv-vs-priv races surface via the irreconcilable-prefix table (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)). |
+| Linear, overlap | competing `Evl` or `Dec` extending `v_{d-1}` while an event exists at `v_d` | Rejected at merge per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). `ParentLocked`. Cross-node priv-vs-priv races surface via the irreconcilable-prefix table (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)). |
 | Linear, post-evaluation-seal | `Evl` extending pre-seal serial | Rejected by seal-cap (cannot fork at or before the seal). |
 | Any non-terminal, clean linear | `Dec` extending the current tip | Append at chain max-serial; mark decommissioned. |
 | Decommissioned | any submission | Rejected with `IelDecommissioned`. |
@@ -407,7 +407,7 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 - `lib/kels/src/types/iel/event.rs` — `IdentityEventKind` enum (`Icp`/`Evl`/`Dec`); `validate_structure` per per-kind field rules.
 - `lib/kels/src/types/iel/verification.rs` — `IelVerifier`, `IelVerification`, branch state with tracked `authPolicy` and tracked `governancePolicy`. Surfaces `is_decommissioned`, `lastSealAdvancingEvent`.
 - `lib/kels/src/identity_builder.rs` — `IdentityEventBuilder` with `evolve()`, `decommission()`; pending-events bundling; pre-flight server-chain re-verification.
-- Server submit handler — terminal gate (`IelDecommissioned`), immunity gate, privileged-event merge-layer rejection (a priv `Evl`/`Dec` whose landing would create or join a divergent set is rejected with `ParentLocked`-equivalent per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal)), algorithmic `ParentLocked` trigger for events at-or-before evaluation seal on linear chains.
+- Server submit handler — terminal gate (`IelDecommissioned`), immunity gate, privileged-event merge-layer rejection (a priv `Evl`/`Dec` whose landing would create or join a divergent set is rejected with `ParentLocked` per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal)), algorithmic `ParentLocked` trigger for events at-or-before evaluation seal on linear chains.
 - Storage — `iel_events` table. **No archive table** (no `Rpr` to archive into).
 
 **Notable simplifications vs. SEL:**

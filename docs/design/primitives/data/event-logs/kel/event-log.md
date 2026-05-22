@@ -188,7 +188,7 @@ A KEL rejects a privileged event (`Rot`, `Ror`, or `Dec`) at the merge layer whe
 - **On a linear chain** with an existing event at `v_d`, a privileged event with `previous = v_{d-1}.said` would land as a sibling and create a 2-event divergent set containing a privileged event. Rejected at merge.
 - **On an already-divergent chain**, a privileged event with `previous = v_{d-1}.said` would join the existing divergent set. Rejected at merge.
 
-In both cases the merge layer returns a `ParentLocked`-equivalent rejection; the chain's prior state stands. Cross-node priv-vs-priv races (each event landing cleanly on its submitting node, gossip-arriving competing event rejected by the seal-cap) surface at the federation layer via the irreconcilable-prefix table (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races)).
+In both cases the merge layer returns a `ParentLocked` rejection; the chain's prior state stands. Cross-node priv-vs-priv races (each event landing cleanly on its submitting node, gossip-arriving competing event rejected by the seal-cap) surface at the federation layer via the irreconcilable-prefix table (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races)).
 
 **Distinction from Rec.** The divergence-ancestor-extending shape of `Rec` (`previous = v_{d-1}.said`) routes through the discriminator before any divergent-set check fires. `Rec` archives the other events at `v_d` and resolves the divergence; it never produces a divergent set containing a privileged event. The kind discriminator (archiving `Rec` vs privileged `Rot`/`Ror`/`Dec`) determines whether the parent-shape resolves divergence (archival via `Rec`) or is rejected (privileged kinds, when their landing would create or join a divergent set).
 
@@ -204,10 +204,10 @@ On a divergent KEL, the merge engine routes submissions per the divergent-set st
 
 | Divergent set state | Recovery path | Privileged submission | Other kinds |
 |---|---|---|---|
-| Non-privileged divergent (`Ixn`-`Ixn` at `v_d`); seal not yet advanced | `Rec` (archives losing branch) | Rejected (`ParentLocked`-equivalent) per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) | `RecoverRequired` for any non-`Rec` submission |
+| Non-privileged divergent (`Ixn`-`Ixn` at `v_d`); seal not yet advanced | `Rec` (archives losing branch) | Rejected (`ParentLocked`) per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) | `RecoverRequired` for any non-`Rec` submission |
 | Sealed-divergent (seal-advancing event landed in one branch) | — (no normal archival path; competing `Rec` against `v_{d-1}` rejected by the locked-portion bound) | Rejected (`ParentLocked` — seal already advanced past `v_{d-1}`) | `ParentLocked` for any non-priv submission |
 
-`ParentLocked`-equivalent rejections mirror SEL's `ParentLocked` shape: someone has advanced the seal (via `Rec`/`Ror`/`Rot` on KEL; `Sea`/`Rpr` on SEL), and safe normal-flow continuation is no longer possible.
+`ParentLocked` rejections mirror SEL's `ParentLocked` shape: someone has advanced the seal (via `Rec`/`Ror`/`Rot` on KEL; `Sea`/`Rpr` on SEL), and safe normal-flow continuation is no longer possible.
 
 ## Decommission (Dec)
 
@@ -246,13 +246,13 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 |---|---|---|
 | Linear, normal append at tip+1 | non-terminal events | Append. `Accepted`, `divergedAt: None`. |
 | Linear, overlap at earlier serial (`Ixn`-`Ixn`) | non-seal-advancing events | Insert forking event; chain transitions to Divergent. `Diverged`, `divergedAt: Some(d)`. |
-| Linear (active) | batch ending in `Rot`, `Ror`, or `Dec` (`previous = v_{d-1}.said`, would land as sibling of existing event at `v_d`) | Rejected at merge per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). `ParentLocked`-equivalent. |
+| Linear (active) | batch ending in `Rot`, `Ror`, or `Dec` (`previous = v_{d-1}.said`, would land as sibling of existing event at `v_d`) | Rejected at merge per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). `ParentLocked`. |
 | Linear (active), normal-append privileged | batch ending in `Rot`, `Ror`, or `Dec` extending the current tip cleanly | Append. Seal advances on `Rot`/`Ror`; `Dec` marks decommissioned. `Accepted`. |
 | Post-divergence-resolution linear (chain was Divergent; an extension advanced the seal on the surviving branch) | non-priv events or competing `Rec` extending `v_{d-1}` | `ParentLocked` (seal advanced; locked-portion bound rejects competing `Rec`). |
 | Linear, overlap | batch ending in `Rec` | Discriminator-driven recovery. Branch-tip-extending Rec: `Rec.previous` is a branch tip at `v_d`, Rec extends it at `v_{d+1}`, the other branch archived. Divergence-ancestor-extending Rec: `Rec.previous = v_{d-1}.said`, Rec lands at `v_d`, both branches at `v_d` archived (used when both branches are adversary-planted). `Recovered`. |
 | Divergent, seal not yet advanced | non-`Rec`, non-(Rot/Ror/Dec) events | `RecoverRequired`. |
 | Divergent, seal not yet advanced | batch ending in `Rec` | Discriminator-driven recovery. `Recovered`. |
-| Divergent | batch ending in `Rot`, `Ror`, or `Dec` (`previous = v_{d-1}.said`, would join divergent set) | Rejected at merge per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). `ParentLocked`-equivalent. |
+| Divergent | batch ending in `Rot`, `Ror`, or `Dec` (`previous = v_{d-1}.said`, would join divergent set) | Rejected at merge per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). `ParentLocked`. |
 | Divergent, seal advanced in branch extension | competing `Rec` extending `v_{d-1}.said` | `ParentLocked` (locked-portion bound rejects the competing `Rec`). |
 | Linear, no conflict | batch ending in `Dec` | Insert `Dec`, mark decommissioned. `Accepted`. |
 | Decommissioned | any submission | Rejected with `KelDecommissioned` (the seal-cap rejects any submission whose parent sits at-or-before `v_{d-1}`; concurrent priv-event federation races resolve at the infrastructure layer per [#205](https://github.com/jasoncolburne/kels/issues/205)). |
