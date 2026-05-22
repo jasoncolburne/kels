@@ -4,7 +4,7 @@ How operators of IEL chains with multi-party governance prevent accidental diver
 
 ## The race
 
-For IEL chains with multi-party governance — an `authPolicy` or `governancePolicy` that multiple parties can satisfy — races between concurrent submissions to different federation nodes produce cross-node disagreement even when all parties are legitimately authorized. Two operators independently signing and submitting `Evl` events to different nodes without coordination produces a federation-level dispute: each `Evl` lands cleanly on its submitting node; gossip-arriving competing event is rejected by the seal-cap on each side. The contested-prefix table surfaces the disagreement; the federation cannot extend the chain forward under either branch without operator-level reconciliation. (Same-node second submission is rejected at the merge layer per [../design/protocol-doctrine.md §Privileged Divergence is Terminal](../design/protocol-doctrine.md#privileged-divergence-is-terminal): every IEL event is privileged, so a second event at the same serial is uniformly rejected.)
+For IEL chains with multi-party governance — an `authPolicy` or `governancePolicy` that multiple parties can satisfy — races between concurrent submissions to different federation nodes produce cross-node disagreement even when all parties are legitimately authorized. Two operators independently signing and submitting `Evl` events to different nodes without coordination produces a federation-level dispute: each `Evl` lands cleanly on its submitting node; gossip-arriving competing event is rejected by the seal-cap on each side. The irreconcilable-prefix table surfaces the disagreement; the federation cannot extend the chain forward under either branch without operator-level reconciliation. (Same-node second submission is rejected at the merge layer per [../design/protocol-doctrine.md §Privileged Divergence is Terminal](../design/protocol-doctrine.md#privileged-divergence-is-terminal): every IEL event is privileged, so a second event at the same serial is uniformly rejected.)
 
 ## Why this is load-bearing for high-stakes identities
 
@@ -34,6 +34,6 @@ Defense against threshold compromise is a separate concern, addressed via operat
 
 ## See also
 
-- [../design/primitives/data/event-logs/iel/event-log.md §Privileged-event merge-layer rejection](../design/primitives/data/event-logs/iel/event-log.md#privileged-event-merge-layer-rejection) — the protocol mechanics that make multi-party-governance races resolve via federation-layer dispute rather than per-node contested state.
+- [../design/primitives/data/event-logs/iel/event-log.md §Privileged-event merge-layer rejection](../design/primitives/data/event-logs/iel/event-log.md#privileged-event-merge-layer-rejection) — the protocol mechanics that make multi-party-governance races resolve via federation-layer dispute.
 - [../design/infrastructure/federation.md](../design/infrastructure/federation.md) — the federation IEL as a concrete instance of a high-stakes multi-party-governance identity; bootstrap and membership-change ceremonies use the designated-submitter pattern.
 - [enrollment](../development/enrollment.md) — application-developer side of the brand-new chain race.

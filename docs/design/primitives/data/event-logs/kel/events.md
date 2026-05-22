@@ -78,7 +78,7 @@ Anchors on `Rot` and `Ror` are structurally durable against `Rec` archival — b
 
 ### Recovery-key revelation
 
-`Rec` / `Ror` / `Dec` reveal the `recoveryKey` field. Once revealed in any event on the chain, that recovery key is "spent" — future divergent events cannot be resolved via `Rec` against the spent key. After recovery-key revelation, the only protocol path that ends the chain is `Dec` extending the chain's tip cleanly (Decommissioned); priv events that would create or join a divergent set are rejected at the merge layer per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal), and federation-level priv-vs-priv races surface via the contested-prefix table.
+`Rec` / `Ror` / `Dec` reveal the `recoveryKey` field. Once revealed in any event on the chain, that recovery key is "spent" — future divergent events cannot be resolved via `Rec` against the spent key. After recovery-key revelation, the only protocol path that ends the chain is `Dec` extending the chain's tip cleanly (Decommissioned); priv events that would create or join a divergent set are rejected at the merge layer per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal), and federation-level priv-vs-priv races surface via the irreconcilable-prefix table.
 
 `Ror` is the proactive form: the chain holder rotates both keys (no divergence required), revoking any future divergent recovery a second party could attempt with the now-stale key material. Cadence is operator guidance — see §Seal-advance cap below.
 
@@ -164,7 +164,7 @@ s5_c     Dec with previous = s_4.said                              (a second rec
   Node B receives Rec_b: Rec_b.parent_serial = 4 < seal_serial = 5 → rejected by seal-cap.
 ```
 
-Each node retains its locally-landed first-receive. The seal-cap rejects each peer's gossip-arriving submission unconditionally — no boundary case admits competing privileged events at a sealed serial. Federation-level convergence in this scenario is provided at the infrastructure layer via a contested-prefix table that nodes maintain and gossip-sync; see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205).
+Each node retains its locally-landed first-receive. The seal-cap rejects each peer's gossip-arriving submission unconditionally — no boundary case admits competing privileged events at a sealed serial. Federation-level convergence in this scenario is provided at the infrastructure layer via a irreconcilable-prefix table that nodes maintain and gossip-sync; see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205).
 
 ### Clean decommission
 

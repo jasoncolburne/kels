@@ -78,7 +78,7 @@ A set of node prefixes for selective replication. Prefixes are sorted lexicograp
 
 ## Chain Lifecycle
 
-A SEL transitions through states (Active ↔ Divergent → Decommissioned) driven by the events in the chain itself, not external flags. Privileged events whose landing would create or join a divergent set are rejected at the merge layer per [../protocol-doctrine.md §Privileged Divergence is Terminal](../protocol-doctrine.md#privileged-divergence-is-terminal); cross-node priv-vs-priv races surface at the federation layer via the contested-prefix table. The **effective SAID** for a chain is its gossip-visible identity:
+A SEL transitions through states (Active ↔ Divergent → Decommissioned) driven by the events in the chain itself, not external flags. Privileged events whose landing would create or join a divergent set are rejected at the merge layer per [../protocol-doctrine.md §Privileged Divergence is Terminal](../protocol-doctrine.md#privileged-divergence-is-terminal); cross-node priv-vs-priv races surface at the federation layer via the irreconcilable-prefix table. The **effective SAID** for a chain is its gossip-visible identity:
 - Linear chain: the tip event's SAID.
 - Divergent chain: `hash_effective_said("divergent:{prefix}")` — synthetic, deterministic, cross-node-consistent.
 - Decommissioned chain: the `Dec` event's SAID — terminal owner-initiated end.

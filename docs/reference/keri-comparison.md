@@ -41,7 +41,7 @@ Key components: KELs, witnesses, watchers, jurors, judges, OOBIs (Out-of-Band In
 KELS is a federated DVTI (Decentralized Verifiable Trust Infrastructure) that shares KERI's foundational DKMI concepts (KELs, pre-rotation, SAIDs, CESR) but diverges significantly in how it handles key compromise, replication, and trust — and extends past the keys layer to identity (IEL) and content (SEL). KELS:
 
 - **Stores divergent events directly in the KEL** rather than treating duplicity as an external detection problem.
-- Introduces explicit recovery (`rec`) event type with formal semantics; cross-node federation-level non-convergence (priv-vs-priv races) is surfaced structurally via the contested-prefix table at the infrastructure layer rather than via a dedicated terminate-with-prejudice event. The structural property is the seal-cap + priv-divergence-rejected-at-merge rules that keep divergent sets free of privileged events and route federation disagreement to the infrastructure layer.
+- Introduces explicit recovery (`rec`) event type with formal semantics; cross-node federation-level non-convergence (priv-vs-priv races) is surfaced structurally via the irreconcilable-prefix table at the infrastructure layer rather than via a dedicated terminate-with-prejudice event. The structural property is the seal-cap + priv-divergence-rejected-at-merge rules that keep divergent sets free of privileged events and route federation disagreement to the infrastructure layer.
 - Uses a custom gossip protocol for replication (HyParView + PlumTree over ML-KEM-768/1024 + ML-DSA-65/87 + AES-GCM-256) rather than witness receipts.
 - Constructs federation as an identity — a shared **federation IEL** whose current `authPolicy` declares the set of authorized peers and whose `governancePolicy` constrains how membership evolves.
 - Backs peer gossip-service identities with HSMs.
@@ -72,7 +72,7 @@ KERI has no analogue at this layer — ACDC credentials and TEL registries are c
 | Pre-rotation commitment | Yes (hash of next public key) | Yes (Blake3 of next public key) |
 | Recovery from signing key compromise | Rotation event | `rec` event (dual-signed: rotation + recovery key) |
 | Recovery from pre-committed next-key compromise | Rotation by controller (race condition) | `rec` event (requires recovery key — no race) |
-| Total compromise (rotation + recovery) | No explicit recovery key | Federation-level non-convergence — concurrent priv-vs-priv submissions to different nodes produce cross-node disagreement surfaced via the contested-prefix table; per-node priv events whose landing would create or join a divergent set are rejected at the merge layer per [§Privileged Divergence is Terminal](../design/protocol-doctrine.md#privileged-divergence-is-terminal). Operator response is reincept under a new prefix when reconciliation fails. |
+| Total compromise (rotation + recovery) | No explicit recovery key | Federation-level non-convergence — concurrent priv-vs-priv submissions to different nodes produce cross-node disagreement surfaced via the irreconcilable-prefix table; per-node priv events whose landing would create or join a divergent set are rejected at the merge layer per [§Privileged Divergence is Terminal](../design/protocol-doctrine.md#privileged-divergence-is-terminal). Operator response is reincept under a new prefix when reconciliation fails. |
 | Recovery key hierarchy | Composable (tholder), no explicit tiering | Three-tier (signing, rotation, recovery) |
 | Key compromise visibility | External: watchers detect duplicity | Internal: divergence stored in KEL, propagated network-wide |
 
@@ -80,7 +80,7 @@ KERI has no analogue at this layer — ACDC credentials and TEL registries are c
 
 That hierarchy is one half of KELS's key-compromise story. The other half is IEL composition: where KERI composes multiple keys within a single KEL via tholder, KELS composes multiple single-key KELs at the IEL layer (`authPolicy` referencing independent KEL prefixes via `identity(...)`). Compromise of any one member KEL is resolved on that KEL's own recovery primitive, then `Evl`'d out of the IEL's `authPolicy` — the identity continues without disrupting the other members.
 
-**2026 consideration:** With quantum computing advances making asymmetric key compromise more plausible (even if not yet practical at scale), having a formal total-compromise response — federation-level non-convergence surfaced via the contested-prefix table, with merge-layer rejection of priv events that would create or join divergent sets — is increasingly valuable. Both protocols' pre-rotation commitments provide some post-quantum protection since the hash commitment cannot be broken even by a quantum adversary — but KELS's recovery hierarchy provides defense in depth beyond what pre-rotation alone offers.
+**2026 consideration:** With quantum computing advances making asymmetric key compromise more plausible (even if not yet practical at scale), having a formal total-compromise response — federation-level non-convergence surfaced via the irreconcilable-prefix table, with merge-layer rejection of priv events that would create or join divergent sets — is increasingly valuable. Both protocols' pre-rotation commitments provide some post-quantum protection since the hash commitment cannot be broken even by a quantum adversary — but KELS's recovery hierarchy provides defense in depth beyond what pre-rotation alone offers.
 
 ### 2. Decoupling Device-Level Cryptography from Identity
 
@@ -120,8 +120,8 @@ KERI's contrast: the KEL is the only chain primitive in the core protocol; TELs 
 | Conflicting events | Rejected by witnesses; detected by watchers | Stored in KEL; KEL frozen until resolved |
 | Divergence visibility | Requires active watcher monitoring | Inherent in data structure; propagated via gossip |
 | Resolution mechanism | Social/out-of-band (controller accountability) | Cryptographic (`rec` to recover; privileged-divergence-is-terminal freezes the chain when any privileged event lands in a divergent set) |
-| Forensic record | Distributed across watchers | Preserved in KEL (per-node first-receive retained on priv-vs-priv races; cross-node disagreement surfaced via the contested-prefix table) |
-| Adversary event archival | Not formalized | `rec` archives adversary events on divergent KEL; federation-disputed prefixes surface via the contested-prefix table at the infrastructure layer |
+| Forensic record | Distributed across watchers | Preserved in KEL (per-node first-receive retained on priv-vs-priv races; cross-node disagreement surfaced via the irreconcilable-prefix table) |
+| Adversary event archival | Not formalized | `rec` archives adversary events on divergent KEL; federation-disputed prefixes surface via the irreconcilable-prefix table at the infrastructure layer |
 
 **Analysis:** This is the most fundamental architectural difference, and it's narrower than "external vs. internal" — it's **detection-only vs. detection-plus-resolution**.
 
@@ -257,7 +257,7 @@ KELS takes a fundamentally different approach: each KEL has a single signing key
 |---|---|---|
 | Scope | Per-identifier (embedded in KEL) | Multi-scope: identity (`authPolicy` on IEL), governance (`governancePolicy` on IEL), credential (travels with credential), federation (membership on the federation IEL) |
 | Expressiveness | Fractional weights on keys within one identifier | Nested DSL: threshold, weighted, delegation, policy references |
-| Key compromise isolation | All keys share one identifier's fate | Each endorser has an independent recovery lifecycle and structurally-derived contestation outcome (privileged-divergence-is-terminal) |
+| Key compromise isolation | All keys share one identifier's fate | Each endorser has an independent recovery lifecycle and structurally-derived irreconcilability outcome (privileged-divergence-is-terminal) |
 | Governance changes | Rotation event (changes the identifier's keys) | Issue new credential with new policy |
 | Delegation | Separate mechanism (delegated rotation requires delegator approval) | First-class `delegate(DELEGATOR)` node in the DSL (specific delegates discovered at evaluation time) |
 | Revocation/withdrawal | TEL-based (separate append-only log) | Poisoning with soft/hard/immune modes and admin-controlled poison expressions |
@@ -270,7 +270,7 @@ KELS takes a fundamentally different approach: each KEL has a single signing key
 KELS's policy DSL operates at a different level, composing across independent identities rather than keys within one identity:
 
 - **Cross-identity nesting:** `threshold(2, [endorse(A), weighted(3, [endorse(B):2, endorse(C):1]), policy(SAID)])` — a threshold where A, B, C are independent KEL prefixes (each with their own key lifecycle) and one child is an entire sub-policy resolved by SAID.
-- **Cross-identity composition:** Policies reference independent KEL prefixes, each with their own key lifecycle and recovery procedures, and each subject to the same structural contestation outcome (privileged-divergence-is-terminal). A compromised endorser recovers independently without affecting others.
+- **Cross-identity composition:** Policies reference independent KEL prefixes, each with their own key lifecycle and recovery procedures, and each subject to the same structural irreconcilability outcome (privileged-divergence-is-terminal). A compromised endorser recovers independently without affecting others.
 - **Delegation as a node type:** `delegate(HSM_PREFIX)` expresses "any service delegated by this HSM must endorse" as a first-class concept in the trust expression — not a separate mechanism layered on top. The specific delegate is discovered at evaluation time (the open form).
 - **Policy references:** `policy(SAID)` enables reuse and composition of policies across credentials. An organization can define a "board approval" policy once and reference it from many credentials.
 - **Policy compaction:** `delegate(HSM)` names only the delegator — edges match on trust *structure* (any service delegated by this HSM) without pinning specific delegates, enabling fleet scaling without edge updates.
@@ -283,7 +283,7 @@ expression: threshold(2, [endorse(A), delegate(HSM), endorse(C)])
 poison:     threshold(2, [endorse(ADMIN_1), endorse(ADMIN_2)])
 ```
 
-**The fundamental architectural difference:** KERI couples governance to identity — the identifier *is* a 2-of-3 multisig. KELS decouples them — three separate identities *collectively endorse* a credential per a policy. KERI's approach is more efficient (one KEL replay). KELS's approach gives each endorser independent key lifecycle — if one endorser's key is compromised, they recover independently via `rec` without affecting the other endorsers or the policy itself; full-tier compromise produces federation-level non-convergence (priv-vs-priv races between adversary and operator surfaced via the contested-prefix table) with reincept as recourse. In KERI, a compromised key in a multisig set requires a rotation of the entire identifier.
+**The fundamental architectural difference:** KERI couples governance to identity — the identifier *is* a 2-of-3 multisig. KELS decouples them — three separate identities *collectively endorse* a credential per a policy. KERI's approach is more efficient (one KEL replay). KELS's approach gives each endorser independent key lifecycle — if one endorser's key is compromised, they recover independently via `rec` without affecting the other endorsers or the policy itself; full-tier compromise produces federation-level non-convergence (priv-vs-priv races between adversary and operator surfaced via the irreconcilable-prefix table) with reincept as recourse. In KERI, a compromised key in a multisig set requires a rotation of the entire identifier.
 
 KELS's dual-signature requirement for recovery events (rotation key + recovery key) is a form of 2-of-2 multi-sig, but it serves a specific security purpose (proving possession of both key tiers) rather than general governance.
 
@@ -419,7 +419,7 @@ KERI's browser-based client (signify-ts) works well for web applications but lac
 **Recommended: KELS**
 
 Enterprises need:
-- **Deterministic recovery procedures** — KELS's three-tier key hierarchy, explicit recovery events, and merge-layer rejection of privileged-events-in-divergent-sets (with federation-layer dispute surfaced via the contested-prefix table) map directly to incident response runbooks.
+- **Deterministic recovery procedures** — KELS's three-tier key hierarchy, explicit recovery events, and merge-layer rejection of privileged-events-in-divergent-sets (with federation-layer dispute surfaced via the irreconcilable-prefix table) map directly to incident response runbooks.
 - **Auditable divergence handling** — Divergence stored in the KEL provides a forensic record without requiring external watcher infrastructure.
 - **Controlled federation** — Membership lives on the federation IEL; changes are governance-authorized `Evl` events requiring threshold endorsement, mapping cleanly to enterprise change-management processes.
 - **Automated trust decisions** — Type-safe verification tokens enable high-assurance automated systems without human-in-the-loop for every trust decision.
@@ -445,7 +445,7 @@ KERI's witness model assumes relatively stable infrastructure, which is often un
 High-value contexts need:
 - **Total compromise response** — Privileged-divergence-is-terminal provides a deterministic response to the worst case: any privileged event landing in a divergent set freezes the chain with a federation-wide-consistent effective SAID. In DeFi, an ambiguous identity state can mean unbounded financial loss.
 - **Zero-trust verification** — KELS's explicit "DB cannot be trusted" model and type-safe verification align with the assumption that any component may be compromised.
-- **Forensic preservation** — Per-node first-receive retained on priv-vs-priv races; cross-node disagreement surfaced via the contested-prefix table for dispute resolution.
+- **Forensic preservation** — Per-node first-receive retained on priv-vs-priv races; cross-node disagreement surfaced via the irreconcilable-prefix table for dispute resolution.
 
 **Caveat:** KELS's algorithm choices (ML-DSA-65/87 for infrastructure, P-256 for mobile clients) are not optimal for blockchain interoperability (where Ed25519 and secp256k1 dominate). KERI's algorithm flexibility is an advantage here.
 
@@ -569,7 +569,7 @@ A federation is born via a one-time **coordinator ceremony**: one node acts as c
 - **Peer management:** Submit an `Evl` event on the federation IEL with threshold endorsement. A single chain operation; no binary rebuild, no fleet redeploy.
 - **Monitoring:** Divergence is visible in the KEL/IEL/SEL itself and propagated via gossip — monitoring is built into the data model. Anti-entropy runs every 10 seconds by default, providing continuous consistency checking.
 - **Backup/recovery:** PostgreSQL databases are the primary data store. HSM key material must be backed up separately. Redis is reconstructable from PostgreSQL on restart (cache + operational state rebuilt via anti-entropy).
-- **Federation health:** Monitor the federation IEL for cross-node priv-vs-priv races (concurrent `Evl`s surfaced via the contested-prefix table) and for member liveness. The federation IEL is propagated via the same gossip mesh as everything else; no separate consensus protocol to operate.
+- **Federation health:** Monitor the federation IEL for cross-node priv-vs-priv races (concurrent `Evl`s surfaced via the irreconcilable-prefix table) and for member liveness. The federation IEL is propagated via the same gossip mesh as everything else; no separate consensus protocol to operate.
 
 ### Incident Response
 
@@ -874,7 +874,7 @@ Consider a cryptographer with strong knowledge of public key infrastructure, has
 **KERIpy has more concepts to learn:** witnesses, watchers, jurors, judges, registrars, OOBIs, TELs, ACDCs, receipt thresholds, witness rotation, delegation approval, partial rotation — each with its own abbreviated naming.
 
 **KELS:**
-- The cryptographer dives into divergence handling, recovery semantics, and the merge transaction. These are complex but documented in the type system — `KelMergeResult` has variants `Accepted`, `Recovered`, `Diverged`, `RecoverRequired`, `ParentLocked` that enumerate the state machine explicitly; cross-node federation-level dispute surfaces via the contested-prefix table at the infrastructure layer.
+- The cryptographer dives into divergence handling, recovery semantics, and the merge transaction. These are complex but documented in the type system — `KelMergeResult` has variants `Accepted`, `Recovered`, `Diverged`, `RecoverRequired`, `ParentLocked` that enumerate the state machine explicitly; cross-node federation-level dispute surfaces via the irreconcilable-prefix table at the infrastructure layer.
 - The gossip protocol (HyParView + PlumTree) is a standard distributed-systems pattern with extensive external literature; the federation model expresses membership and governance as ordinary IEL operations and uses the same policy DSL the rest of the system uses.
 - The verification model's advisory locking and TOCTOU prevention are sophisticated but follow established database patterns.
 
@@ -910,7 +910,7 @@ The most significant differentiator is **detection vs. resolution**. KERI provid
 
 The empirical state of KERI's social trust layer compounds the gap. After roughly a decade of KERI, the operational infrastructure that distinguishes it from a plain KEL system has not materialized: watchers, jurors, and judges lack standalone deployable implementations, and only a small number of real witness pools exist. In practice, adopters reach for cloud-agent hosting (KERIA), which re-introduces the centralized trust dependency KERI was designed to avoid. KERI as designed and KERI as deployed are different systems.
 
-KELS's three-tier key hierarchy (signing, rotation, recovery) provides a stronger recovery posture than KERI's tholder + pre-rotation model, which composes keys but has no explicit recovery-key tiering. KELS eliminates the race condition inherent in KERI's pre-committed-next-key compromise scenario by requiring dual signatures (rotation + recovery) for recovery events, and provides a deterministic total-compromise response — federation-level non-convergence surfaced via the contested-prefix table, with merge-layer rejection of priv events that would create or join divergent sets — that KERI lacks. On multi-party governance, KERI embeds weighted multi-sig thresholds directly in the identifier, while KELS keeps core KELs single-key and provides governance at a higher layer via kels-policy — an expressive policy DSL supporting `endorse`, `identity`, `delegate`, `threshold`, `weighted`, and nested `policy` references, with soft/hard/immune poisoning and admin-controlled poison expressions. The single-argument `delegate(DELEGATOR)` form discovers specific delegates at evaluation time, so edges match on trust structure without pinning specific services. Both approaches can express equivalent policies; the difference is where verification complexity lives.
+KELS's three-tier key hierarchy (signing, rotation, recovery) provides a stronger recovery posture than KERI's tholder + pre-rotation model, which composes keys but has no explicit recovery-key tiering. KELS eliminates the race condition inherent in KERI's pre-committed-next-key compromise scenario by requiring dual signatures (rotation + recovery) for recovery events, and provides a deterministic total-compromise response — federation-level non-convergence surfaced via the irreconcilable-prefix table, with merge-layer rejection of priv events that would create or join divergent sets — that KERI lacks. On multi-party governance, KERI embeds weighted multi-sig thresholds directly in the identifier, while KELS keeps core KELs single-key and provides governance at a higher layer via kels-policy — an expressive policy DSL supporting `endorse`, `identity`, `delegate`, `threshold`, `weighted`, and nested `policy` references, with soft/hard/immune poisoning and admin-controlled poison expressions. The single-argument `delegate(DELEGATOR)` form discovers specific delegates at evaluation time, so edges match on trust structure without pinning specific services. Both approaches can express equivalent policies; the difference is where verification complexity lives.
 
 KELS's verification model enforces security invariants at the type level: the `KelVerification` token (private fields, no public constructor, obtainable only through `KelVerifier::into_verification()`) guarantees at compile time that security decisions cannot be made on unverified data. Advisory locking through verify+write eliminates TOCTOU vulnerabilities. KERI's verification semantics are specified but enforcement rigor is implementation-dependent.
 

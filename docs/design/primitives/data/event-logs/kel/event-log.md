@@ -70,7 +70,7 @@ The divergence invariant — combined with the seal-advance cap (`MINIMUM_PAGE_S
 
 Concurrent privileged events extending the same `v_{d-1}` on different federation nodes (e.g., `Rot_a` on Node A and `Rot_b` on Node B, both extending `v_{d-1}.said`) land cleanly as linear-chain extensions on their respective submitting nodes (the seal advances locally). Gossip then delivers each event to the other node, where the seal-cap rejects the late arrival (its parent sits in the locked portion behind the now-advanced seal). Per-node, each chain stays linear with its own first-receive as tip; cross-node, the federation does not converge at the protocol layer.
 
-Federation-level convergence is provided by the contested-prefix table at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)). The protocol enforces local invariants strictly; the federation layer surfaces the cross-node disagreement.
+Federation-level convergence is provided by the irreconcilable-prefix table at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)). The protocol enforces local invariants strictly; the federation layer surfaces the cross-node disagreement.
 
 ## Recovery (Rec)
 
@@ -188,7 +188,7 @@ A KEL rejects a privileged event (`Rot`, `Ror`, or `Dec`) at the merge layer whe
 - **On a linear chain** with an existing event at `v_d`, a privileged event with `previous = v_{d-1}.said` would land as a sibling and create a 2-event divergent set containing a privileged event. Rejected at merge.
 - **On an already-divergent chain**, a privileged event with `previous = v_{d-1}.said` would join the existing non-privileged divergent set. Rejected at merge.
 
-In both cases the merge layer returns a `ParentLocked`-equivalent rejection; the chain's prior state stands. Cross-node priv-vs-priv races (each event landing cleanly on its submitting node, gossip-arriving competing event rejected by the seal-cap) surface at the federation layer via the contested-prefix table (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races)).
+In both cases the merge layer returns a `ParentLocked`-equivalent rejection; the chain's prior state stands. Cross-node priv-vs-priv races (each event landing cleanly on its submitting node, gossip-arriving competing event rejected by the seal-cap) surface at the federation layer via the irreconcilable-prefix table (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races)).
 
 **Distinction from Rec.** The divergence-ancestor-extending shape of `Rec` (`previous = v_{d-1}.said`) routes through the discriminator before any divergent-set check fires. `Rec` archives the other events at `v_d` and resolves the divergence; it never produces a divergent set containing a privileged event. The kind discriminator (archiving `Rec` vs privileged `Rot`/`Ror`/`Dec`) determines whether the parent-shape resolves divergence (archival via `Rec`) or is rejected (privileged kinds, when their landing would create or join a divergent set).
 

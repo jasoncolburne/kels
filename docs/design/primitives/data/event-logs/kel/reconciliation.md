@@ -86,7 +86,7 @@ Each cell describes what happens when gossip syncs a KEL from a source node (row
 - **Sink terminal state** (Decommissioned) — gossip ignored once sink is terminal; the cell shows the error the sink returns.
 - **Send-side partitioning** (Source: Divergent) — the source partitions the chain into sub-batches the sink will accept under its routing rules. See [§Transfer ordering](#transfer-ordering) above and [merge.md §Gossip Send-Side Partitioning](merge.md#gossip-send-side-partitioning-divergent-kels).
 - **Divergent → Divergent sink** — effective SAIDs match by construction; full anti-entropy may reconcile any-missing-branch-events even when SAIDs already match.
-- **Cross-node priv-vs-priv races** — when sources/sinks land different competing privileged events at the same serial, the seal-cap rejects each peer's gossip-arriving event. Federation-level convergence resolves at the infrastructure layer via the contested-prefix table (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)). See [§Race matrix](#race-matrix) below.
+- **Cross-node priv-vs-priv races** — when sources/sinks land different competing privileged events at the same serial, the seal-cap rejects each peer's gossip-arriving event. Federation-level convergence resolves at the infrastructure layer via the irreconcilable-prefix table (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)). See [§Race matrix](#race-matrix) below.
 
 ### Effective SAID convergence
 
@@ -141,7 +141,7 @@ v_N.said arriving via gossip is rejected at the merge layer per
 [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal):
 its acceptance would create a divergent set containing a privileged event.
 Cross-node priv-vs-priv races resolve at the federation layer via the
-contested-prefix table. Competing `Rec` against v_N is rejected by the
+irreconcilable-prefix table. Competing `Rec` against v_N is rejected by the
 locked-portion bound; non-priv extensions submitted at serial ≤ N+1 are
 rejected with `ParentLocked` (seal-cap).
 ```
@@ -267,11 +267,11 @@ Gossip propagates:
     A ≠ B → federation does not converge at the protocol layer.
 ```
 
-Federation-level convergence in this scenario is provided at the infrastructure layer via a contested-prefix table that nodes maintain and gossip-sync; see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205) for the design. The seal-cap stays unconditional; relaxing it to admit competing events at a sealed serial would re-open a stale-authority killswitch surface.
+Federation-level convergence in this scenario is provided at the infrastructure layer via a irreconcilable-prefix table that nodes maintain and gossip-sync; see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205) for the design. The seal-cap stays unconditional; relaxing it to admit competing events at a sealed serial would re-open a stale-authority killswitch surface.
 
 ## Race matrix
 
-Concurrent priv-vs-priv races between federation peers — both submitting privileged events extending the same parent `v_{d-1}` to different nodes — uniformly resolve via the same shape: each event lands as a clean linear-chain extension on its submitting node and advances the local seal; gossip then delivers each event to the other node, where the seal-cap rejects it (parent in locked portion). The chain does not structurally converge at the protocol layer; federation-level convergence is provided at the infrastructure layer via the contested-prefix table (see [#205](https://github.com/jasoncolburne/kels/issues/205)).
+Concurrent priv-vs-priv races between federation peers — both submitting privileged events extending the same parent `v_{d-1}` to different nodes — uniformly resolve via the same shape: each event lands as a clean linear-chain extension on its submitting node and advances the local seal; gossip then delivers each event to the other node, where the seal-cap rejects it (parent in locked portion). The chain does not structurally converge at the protocol layer; federation-level convergence is provided at the infrastructure layer via the irreconcilable-prefix table (see [#205](https://github.com/jasoncolburne/kels/issues/205)).
 
 The race participants — any pairing across `{Rec, Ror, Rot, Dec}` — produce identical structural outcomes per-node:
 

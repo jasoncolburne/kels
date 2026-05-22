@@ -16,7 +16,7 @@ All cases below depend on these invariants:
 
 4. **Policy immunity** (storage commitment): every policy referenced as `authPolicy` or `governancePolicy` MUST have `immune: true`. Both submit and verify enforce, so every IEL-referenced policy stays resolvable for the chain's lifetime — past authorizations stay distinguishable from authorization failures. See [event-log.md §Evaluation Seal and Policy Immunity](event-log.md#evaluation-seal-and-policy-immunity).
 
-5. **Divergent sets cannot form locally**: every IEL event is privileged; the merge layer rejects any second event at the same serial per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). Cross-node priv-vs-priv races surface at the federation layer via the contested-prefix table. Operator recourse against compromise is described in [event-log.md §Operator recourse against compromise](event-log.md#operator-recourse-against-compromise) — linear governance evolution or rotating the IEL out of parent policies.
+5. **Divergent sets cannot form locally**: every IEL event is privileged; the merge layer rejects any second event at the same serial per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). Cross-node priv-vs-priv races surface at the federation layer via the irreconcilable-prefix table. Operator recourse against compromise is described in [event-log.md §Operator recourse against compromise](event-log.md#operator-recourse-against-compromise) — linear governance evolution or rotating the IEL out of parent policies.
 
 These invariants are what let IEL ship without `Rpr` or an archival path.
 
@@ -29,7 +29,7 @@ These invariants are what let IEL ship without `Rpr` or an archival path.
 | **Active, sealed** | Sub-state of Active where the submitter's view lands at-or-before `lastSealAdvancingEvent` (a governance-authorized party has advanced the seal past the submitter). Non-terminal `Evl` submissions targeting `v_{seal-1}` are rejected by the seal-cap with `ParentLocked`; only events extending the current tip are admissible. |
 | **Decommissioned** | Exactly one `Dec`, ending a clean chain. Fully terminal: all submissions rejected with `IelDecommissioned`. |
 
-There is **no Repaired state** — IEL has no `Rpr`. There is **no Divergent state** on IEL — every IEL event is privileged, and the merge layer rejects any second event at the same serial per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). Cross-node priv-vs-priv races surface at the federation layer via the contested-prefix table.
+There is **no Repaired state** — IEL has no `Rpr`. There is **no Divergent state** on IEL — every IEL event is privileged, and the merge layer rejects any second event at the same serial per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). Cross-node priv-vs-priv races surface at the federation layer via the irreconcilable-prefix table.
 
 ## Local Submissions Matrix
 
@@ -45,7 +45,7 @@ What happens when a client submits events to the submit handler on a single node
 ### Notes on cell routing
 
 - **`Dec` on Active** — Dec terminates the chain rather than extending it; routes to decommission via clean linear extension.
-- **Privileged event extending `v_{d-1}`** — a privileged event (`Evl` or `Dec`) chaining from earlier than the linear tip would create a divergent set at `v_d`. The merge layer rejects it per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). The chain stays at its prior state. Cross-node priv-vs-priv races surface at the federation layer via the contested-prefix table (see [§Race matrix](#race-matrix) below).
+- **Privileged event extending `v_{d-1}`** — a privileged event (`Evl` or `Dec`) chaining from earlier than the linear tip would create a divergent set at `v_d`. The merge layer rejects it per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). The chain stays at its prior state. Cross-node priv-vs-priv races surface at the federation layer via the irreconcilable-prefix table (see [§Race matrix](#race-matrix) below).
 - **Active, sealed `ParentLocked`** — the seal-cap rejects every submission whose parent sits at-or-before `v_{seal-1}`. When the rejected submission originated from another federation peer's locally-landed priv event (concurrent priv-vs-priv race — `Evl-vs-Evl`, `Evl-vs-Dec`, etc.), the chain does not structurally converge with that peer; federation-level convergence resolves at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)). The per-race-shape enumeration is in [§Race matrix](#race-matrix) below.
 - **Decommissioned IEL → `IelDecommissioned` everywhere.** Dec is fully terminal; the seal-cap rejects any subsequent submission. Federation-race convergence with concurrent competing privileged submissions is handled at the infrastructure layer (see [#205](https://github.com/jasoncolburne/kels/issues/205) and [§Race matrix](#race-matrix) below).
 
@@ -63,7 +63,7 @@ There is no `[..., Rpr]` batch — IEL has no `Rpr` kind.
 
 When chain state transitions, the submit handler publishes the new effective SAID for gossip. Peers compare their local effective SAID against the announcement and fetch the full chain from origin if stale. The receiving handler routes via the same per-event flow used for direct submissions (`Dec` → decommissioned; priv event whose landing would create or join a divergent set → rejected with `ParentLocked`-equivalent).
 
-IEL chains are linear per-node (Active or Decommissioned). The source sends a single full-chain stream that the sink applies as a normal append. Cross-node priv-vs-priv races surface via the contested-prefix table at the federation layer rather than as in-protocol partitioning. See [merge.md §Gossip propagation](merge.md#gossip-propagation).
+IEL chains are linear per-node (Active or Decommissioned). The source sends a single full-chain stream that the sink applies as a normal append. Cross-node priv-vs-priv races surface via the irreconcilable-prefix table at the federation layer rather than as in-protocol partitioning. See [merge.md §Gossip propagation](merge.md#gossip-propagation).
 
 ### Source → Sink state matrix
 
@@ -71,7 +71,7 @@ Each cell describes what happens when gossip syncs a chain from a source node (r
 
 | Source | Sink: Empty | Sink: Active | Sink: Active (other branch authored) | Sink: Decommissioned |
 |--------|-------------|--------------|--------------------------------------|----------------------|
-| **Active** | Full chain appended ✓ | Duplicates, no-op ✓ | Priv-event-extending-`v_{d-1}` rejected at merge per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal); federation-layer dispute via contested-prefix table | `IelDecommissioned` |
+| **Active** | Full chain appended ✓ | Duplicates, no-op ✓ | Priv-event-extending-`v_{d-1}` rejected at merge per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal); federation-layer dispute via irreconcilable-prefix table | `IelDecommissioned` |
 | **Decommissioned** | Full chain (incl. `Dec`) appended ✓ | `Dec` batch → decommission ✓ | `IelDecommissioned` (concurrent priv-event race resolves at infrastructure layer per #205) | Effective SAIDs match; no-op |
 
 ### Notes on cell routing
@@ -87,14 +87,14 @@ All nodes must eventually agree on the effective SAID for each prefix.
 
 | State | Effective SAID | Converges? |
 |-------|---------------|------------|
-| **Active** | Tip event SAID | ✓ (identical chains after gossip when no priv-vs-priv race is in flight; otherwise per-node tips may differ and federation-layer dispute is surfaced via the contested-prefix table). |
+| **Active** | Tip event SAID | ✓ (identical chains after gossip when no priv-vs-priv race is in flight; otherwise per-node tips may differ and federation-layer dispute is surfaced via the irreconcilable-prefix table). |
 | **Decommissioned** | `Dec` event SAID | ✓ (identical chains across all Dec-first nodes when no competing event has been submitted). If a competing privileged event extending `Dec`'s parent has been submitted to a different node, the federation does NOT structurally converge — each node's seal-cap rejects the other's submission; convergence is via the infrastructure layer (see [#205](https://github.com/jasoncolburne/kels/issues/205)). |
 
 ## Edge Cases
 
 ### 1. Two governance-authorized parties race a legitimate Evl
 
-Both submit different `Evl` events at v3 within the gossip-propagation window. Each is governance-authorized; neither is "the adversary." Each event lands cleanly as a linear-chain extension on its submitting node and advances the local seal. Gossip then delivers each event to the other node, where the seal-cap rejects the late arrival. Per-node, each chain stays linear; cross-node, federation-level disagreement is surfaced via the contested-prefix table.
+Both submit different `Evl` events at v3 within the gossip-propagation window. Each is governance-authorized; neither is "the adversary." Each event lands cleanly as a linear-chain extension on its submitting node and advances the local seal. Gossip then delivers each event to the other node, where the seal-cap rejects the late arrival. Per-node, each chain stays linear; cross-node, federation-level disagreement is surfaced via the irreconcilable-prefix table.
 
 ```
 Pre-state (linear at v_2, replicated to nodes A and B):
@@ -120,7 +120,7 @@ rejects the gossip-arriving competing event:
     effective_said(B) = Evl_v3b.said
     A ≠ B → federation does not converge at the protocol layer.
 
-Federation-level convergence is provided via the contested-prefix table
+Federation-level convergence is provided via the irreconcilable-prefix table
 (see [#205](https://github.com/jasoncolburne/kels/issues/205)). Operator
 recourse: reconcile out-of-band, or reincept under a new IEL prefix.
 ```
@@ -129,7 +129,7 @@ The protocol does not pick a winner — picking would mean architecting around "
 
 ### 2. Adversary submits a conflicting Evl after governance compromise
 
-Same shape as case 1 — no protocol-level distinction between "innocent race" and "compromise" since both produce the same per-node-linear-but-federation-disputed signal. Operator's protocol-level recourse is the same: reconcile out-of-band, or reincept under a new prefix. Forensic owner-attribution lives in out-of-band channels (operator publishes a signed statement under their KEL); the in-band signal is "the IEL prefix is in dispute via the contested-prefix table at v_3."
+Same shape as case 1 — no protocol-level distinction between "innocent race" and "compromise" since both produce the same per-node-linear-but-federation-disputed signal. Operator's protocol-level recourse is the same: reconcile out-of-band, or reincept under a new prefix. Forensic owner-attribution lives in out-of-band channels (operator publishes a signed statement under their KEL); the in-band signal is "the IEL prefix is in dispute via the irreconcilable-prefix table at v_3."
 
 ```
 Identical signal to case 1:
@@ -137,7 +137,7 @@ Identical signal to case 1:
   Node A: [Icp] → [Evl_v1] → [Evl_v2] → Evl_v3_operator
   Node B: [Icp] → [Evl_v1] → [Evl_v2] → Evl_v3_adversary
 
-  Federation surfaces the disagreement via the contested-prefix table.
+  Federation surfaces the disagreement via the irreconcilable-prefix table.
 
 Race-vs-takeover indistinguishability: the federation signal records
 disagreement without recording cause. Operator's protocol-level recourse
@@ -156,7 +156,7 @@ IEL chain on Node A (federation-disputed at v_d via priv-vs-priv race):
                                                      (the federation layer
                                                       surfaces Node B's Evl_d_b
                                                       as in-dispute via the
-                                                      contested-prefix table)
+                                                      irreconcilable-prefix table)
 
 SEL chain bound to the IEL (last good at-or-below-seal binding):
 
@@ -182,7 +182,7 @@ Bindings at-or-below `lastSealAdvancingEvent` resolve cleanly (the at-or-below-s
 
 ### 4. Multiple injections to different nodes
 
-Different parties (each with its own valid governance — implies multiple compromised governance authorities or multiple legitimate parties acting independently) inject different `Evl` events to different nodes. Each node sees its first injection as the linear tip; gossip-arriving competing events are rejected by the seal-cap. The federation surfaces cross-node disagreement via the contested-prefix table.
+Different parties (each with its own valid governance — implies multiple compromised governance authorities or multiple legitimate parties acting independently) inject different `Evl` events to different nodes. Each node sees its first injection as the linear tip; gossip-arriving competing events are rejected by the seal-cap. The federation surfaces cross-node disagreement via the irreconcilable-prefix table.
 
 ```
 Pre-state (linear at v_2, replicated to nodes A, B, C):
@@ -202,7 +202,7 @@ competing Evl_*:
   Node B:  tip Evl_b            (Evl_a and Evl_c rejected by seal-cap)
   Node C:  tip Evl_c            (Evl_a and Evl_b rejected by seal-cap)
 
-Federation surfaces the three-way disagreement via the contested-prefix
+Federation surfaces the three-way disagreement via the irreconcilable-prefix
 table. Operator reincepts under a new IEL prefix to resume forward
 operation.
 ```
@@ -241,11 +241,11 @@ Gossip propagates:
     A ≠ B → federation does not converge at the protocol layer.
 ```
 
-Federation-level convergence in this scenario is provided at the infrastructure layer via a contested-prefix table that nodes maintain and gossip-sync; see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205) for the design. The seal-cap stays unconditional; relaxing it to admit competing events at a sealed serial would re-open a stale-authority killswitch surface.
+Federation-level convergence in this scenario is provided at the infrastructure layer via a irreconcilable-prefix table that nodes maintain and gossip-sync; see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205) for the design. The seal-cap stays unconditional; relaxing it to admit competing events at a sealed serial would re-open a stale-authority killswitch surface.
 
 ## Race matrix
 
-Concurrent priv-vs-priv races between federation peers — both submitting privileged events extending the same parent `v_{d-1}` to different nodes — uniformly resolve via the same shape: each event lands as a clean linear-chain extension on its submitting node and advances the local seal; gossip then delivers each event to the other node, where the seal-cap rejects it (parent in locked portion). The chain does not structurally converge at the protocol layer; federation-level convergence is provided at the infrastructure layer via the contested-prefix table (see [#205](https://github.com/jasoncolburne/kels/issues/205)).
+Concurrent priv-vs-priv races between federation peers — both submitting privileged events extending the same parent `v_{d-1}` to different nodes — uniformly resolve via the same shape: each event lands as a clean linear-chain extension on its submitting node and advances the local seal; gossip then delivers each event to the other node, where the seal-cap rejects it (parent in locked portion). The chain does not structurally converge at the protocol layer; federation-level convergence is provided at the infrastructure layer via the irreconcilable-prefix table (see [#205](https://github.com/jasoncolburne/kels/issues/205)).
 
 IEL has a smaller race surface than KEL/SEL because the kind set is `Icp`, `Evl`, `Dec` (no Rec/Rpr/Sea). Icp is structurally pinned to `v_0` and cannot participate in same-parent races on a post-Icp chain. The race participants — any pairing across `{Evl, Dec}` — produce identical structural outcomes per-node:
 

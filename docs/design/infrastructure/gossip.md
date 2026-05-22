@@ -44,7 +44,7 @@ The gossip service (`services/gossip`) synchronizes KELs between independent KEL
 ### Outbound (local event → gossip network)
 
 1. Client submits events to KELS via HTTP
-2. KELS writes to DB, then publishes `{prefix}:{effective_said}` to Redis `kel_updates` channel, where `effective_said` is the prefix's effective SAID (tip event SAID for non-divergent KELs, synthetic hash for divergent/contested KELs). This ensures the gossip feedback loop cache key matches regardless of KEL state.
+2. KELS writes to DB, then publishes `{prefix}:{effective_said}` to Redis `kel_updates` channel, where `effective_said` is the prefix's effective SAID (tip event SAID for non-divergent KELs, synthetic hash for divergent/irreconcilable KELs). This ensures the gossip feedback loop cache key matches regardless of KEL state.
 3. The gossip service receives notification via Redis SUBSCRIBE
 4. Broadcasts `KelAnnouncement { prefix, said }` via PlumTree to all peers
 
@@ -57,7 +57,7 @@ The gossip service (`services/gossip`) synchronizes KELs between independent KEL
    - **Delta fetch** (`fetch_kel_since`): requests only events after local state
    - **Audit fetch** (on `NotFound`): local SAID was purged by recovery — fetches with audit to get archived adversary events + clean chain, submits in recovery-aware stages
    - **Full fetch** (fallback): fetches entire KEL when delta fails for other reasons, or when prefix is unknown locally
-   - **Event partitioning**: when events contain multiple divergent branches (non-privileged `Ixn`-`Ixn` on KEL or `Upd`-`Upd` on SEL), adversary events are submitted first, then recovery events, so merge() can properly detect and resolve divergence. Privileged events (`Rot`, `Ror`, `Dec` on KEL; `Sea`, `Dec` on SEL; `Evl`, `Dec` on IEL) whose landing would create or join a divergent set are rejected at the merge layer per [../protocol-doctrine.md §Privileged Divergence is Terminal](../protocol-doctrine.md#privileged-divergence-is-terminal) — partitioning never produces a divergent batch containing a privileged event. Cross-node priv-vs-priv races surface at the federation layer via the contested-prefix table (see [../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../protocol-doctrine.md#concurrent-privileged-event-races)). When fork siblings share the same `previous` and no recovery branch is identifiable, they are submitted as a single batch and `extend()` sorts them by `(serial, kind_priority, said)` to ensure correct ordering.
+   - **Event partitioning**: when events contain multiple divergent branches (non-privileged `Ixn`-`Ixn` on KEL or `Upd`-`Upd` on SEL), adversary events are submitted first, then recovery events, so merge() can properly detect and resolve divergence. Privileged events (`Rot`, `Ror`, `Dec` on KEL; `Sea`, `Dec` on SEL; `Evl`, `Dec` on IEL) whose landing would create or join a divergent set are rejected at the merge layer per [../protocol-doctrine.md §Privileged Divergence is Terminal](../protocol-doctrine.md#privileged-divergence-is-terminal) — partitioning never produces a divergent batch containing a privileged event. Cross-node priv-vs-priv races surface at the federation layer via the irreconcilable-prefix table (see [../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../protocol-doctrine.md#concurrent-privileged-event-races)). When fork siblings share the same `previous` and no recovery branch is identifiable, they are submitted as a single batch and `extend()` sorts them by `(serial, kind_priority, said)` to ensure correct ordering.
 5. KELS verifies signatures, merges into local KEL (handles divergence/recovery)
 
 ### Why SAID comparison?
@@ -211,10 +211,10 @@ Gossip propagation can miss events due to timing gaps (e.g., between bootstrap p
 
 **Phase 2 — Random sampling (runs every cycle):**
 - Picks a random cursor and fetches one page of prefixes from both local KELS and a random peer
-- Compares effective SAIDs — for non-divergent KELs this is the tip event's SAID; for divergent KELs it's `hash("divergent:{prefix}")`; for contested KELs it's `hash("contested:{prefix}")`
+- Compares effective SAIDs — for non-divergent KELs this is the tip event's SAID; for divergent KELs it's `hash("divergent:{prefix}")`; for irreconcilable KELs it's `hash("irreconcilable:{prefix}")`
 - If digests match, done for this cycle
 - If different, reconciles: fetches missing/different KELs in both directions
-- Divergent and contested KELs use deterministic effective SAIDs (`hash("divergent:{prefix}")` and `hash("contested:{prefix}")`), so nodes with different fork events or archival states report the same SAID. Anti-entropy sees matching SAIDs and skips the prefix, avoiding wasted sync attempts that would just return `RecoverRequired`
+- Divergent and irreconcilable KELs use deterministic effective SAIDs (`hash("divergent:{prefix}")` and `hash("irreconcilable:{prefix}")`), so nodes with different fork events or archival states report the same SAID. Anti-entropy sees matching SAIDs and skips the prefix, avoiding wasted sync attempts that would just return `RecoverRequired`
 
 Stale prefix entries are populated by bootstrap sync failures, gossip fetch failures, and anti-entropy mismatches.
 
@@ -224,7 +224,7 @@ When a KEL becomes divergent:
 
 1. Both divergent branches propagate via gossip
 2. Receiving node's KELS detects divergence during `merge()`
-3. KEL is in Divergent state pending recovery; privileged events (`Rot`/`Ror`/`Dec`) whose landing would create or join a divergent set are rejected at the merge layer per [../protocol-doctrine.md §Privileged Divergence is Terminal](../protocol-doctrine.md#privileged-divergence-is-terminal). Cross-node priv-vs-priv races surface at the federation layer via the contested-prefix table.
+3. KEL is in Divergent state pending recovery; privileged events (`Rot`/`Ror`/`Dec`) whose landing would create or join a divergent set are rejected at the merge layer per [../protocol-doctrine.md §Privileged Divergence is Terminal](../protocol-doctrine.md#privileged-divergence-is-terminal). Cross-node priv-vs-priv races surface at the federation layer via the irreconcilable-prefix table.
 4. Recovery (`Rec`) propagates via gossip and resolves the divergence by archiving the other branch via the discriminator
 
 The gossip layer doesn't need special divergence logic - KELS handles all verification and merge semantics.

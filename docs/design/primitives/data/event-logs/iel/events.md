@@ -149,15 +149,15 @@ v5'      kind=evl   previous=v_4.said, authPolicy=A5_p2      ← party 2's Evl o
         → rejected by seal-cap. B's tip stays at Evl_p2.
 
     Cross-node: A and B do not converge at the protocol layer.
-    Federation surfaces the disagreement via the contested-prefix table per
+    Federation surfaces the disagreement via the irreconcilable-prefix table per
     [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races).
 ```
 
 Each submission is a linear-chain extension on its submitting node's local state at submission time. Two governance-authorized parties — both satisfying the chain's tracked `governancePolicy` at `v_4` — submit `Evl` events concurrently on different nodes. Each `Evl` extends `v_4` and lands cleanly on its submitting node. Gossip then delivers each event to the other node, where the seal-cap rejects the late arrival.
 
-Per-node, each chain stays linear. Cross-node, the federation surfaces the disagreement via the contested-prefix table; the federation cannot extend the chain forward under either branch without operator-level reconciliation.
+Per-node, each chain stays linear. Cross-node, the federation surfaces the disagreement via the irreconcilable-prefix table; the federation cannot extend the chain forward under either branch without operator-level reconciliation.
 
-The structural signature of "race" and "compromise" is identical from the protocol's perspective; consumer-side judgment plus out-of-band knowledge is what determines whether to treat this as accidental race or as intentional takeover. Either way, federation-level dispute surfaces in the contested-prefix table.
+The structural signature of "race" and "compromise" is identical from the protocol's perspective; consumer-side judgment plus out-of-band knowledge is what determines whether to treat this as accidental race or as intentional takeover. Either way, federation-level dispute surfaces in the irreconcilable-prefix table.
 
 Same-node submission attempts: a second governance-authorized `Evl` (or `Dec`) attempted at the same serial on a node where the first event has already landed is rejected at the merge layer per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) (its acceptance would create a divergent set containing a privileged event). The chain stays at its prior state.
 

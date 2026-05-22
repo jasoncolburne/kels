@@ -13,7 +13,7 @@ The submit handler integrates new events into an existing IEL while handling:
 
 Events are linked by their `previous` SAID. Authority is via the anchoring model — the server does NOT verify signatures on submit; consumers verify when they use the data. Every IEL event is governance-authorized: the chain's `governancePolicy` (declared at `Icp`, evolvable via `Evl`) is the gate for every kind including `Icp` itself. The chain's `authPolicy` is reserved for SEL Upd authorization through `ielEvent` binding (see [../sel/events.md](../sel/events.md)).
 
-**There is no `Rpr` kind on IEL** (see [event-log.md §Why no Rpr](event-log.md#why-no-rpr)). Divergent sets cannot form locally on IEL — every IEL event is privileged, so a second event at the same serial is always privileged and the merge layer rejects it. There is no protocol-level repair path because there is no divergence to repair. Cross-node priv-vs-priv races surface at the federation layer via the contested-prefix table. Operator recourse against compromise is described in [event-log.md §Operator recourse against compromise](event-log.md#operator-recourse-against-compromise).
+**There is no `Rpr` kind on IEL** (see [event-log.md §Why no Rpr](event-log.md#why-no-rpr)). Divergent sets cannot form locally on IEL — every IEL event is privileged, so a second event at the same serial is always privileged and the merge layer rejects it. There is no protocol-level repair path because there is no divergence to repair. Cross-node priv-vs-priv races surface at the federation layer via the irreconcilable-prefix table. Operator recourse against compromise is described in [event-log.md §Operator recourse against compromise](event-log.md#operator-recourse-against-compromise).
 
 ## Merge Outcome
 
@@ -80,7 +80,7 @@ if chain has any Dec event → reject IelDecommissioned
                               sits at-or-before Dec's parent.)
 ```
 
-Fires before any other routing, including dedup — Decommissioned is the only per-node terminal state on IEL. There is no per-node Divergent state: divergent sets cannot form locally because every IEL event is privileged and the merge layer rejects any second event at the same serial per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). Cross-node priv-vs-priv races resolve at the federation layer via the contested-prefix table.
+Fires before any other routing, including dedup — Decommissioned is the only per-node terminal state on IEL. There is no per-node Divergent state: divergent sets cannot form locally because every IEL event is privileged and the merge layer rejects any second event at the same serial per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). Cross-node priv-vs-priv races resolve at the federation layer via the irreconcilable-prefix table.
 
 ### 3. Deduplication
 
@@ -111,7 +111,7 @@ else → normal append
 
 `Dec` lands only via clean linear extension of the chain's current tip.
 
-Note the absence of a repair branch — IEL has no `Rpr` kind. Divergent sets cannot form locally on IEL, so there is no divergence to repair. Cross-node priv-vs-priv races surface at the federation layer via the contested-prefix table. See [event-log.md §Privileged-event merge-layer rejection](event-log.md#privileged-event-merge-layer-rejection) and [event-log.md §Operator recourse against compromise](event-log.md#operator-recourse-against-compromise).
+Note the absence of a repair branch — IEL has no `Rpr` kind. Divergent sets cannot form locally on IEL, so there is no divergence to repair. Cross-node priv-vs-priv races surface at the federation layer via the irreconcilable-prefix table. See [event-log.md §Privileged-event merge-layer rejection](event-log.md#privileged-event-merge-layer-rejection) and [event-log.md §Operator recourse against compromise](event-log.md#operator-recourse-against-compromise).
 
 ### 5. Decommission Path
 
@@ -146,7 +146,7 @@ if event.previous corresponds to v_{d-1} and the chain has an existing event at 
     return ParentLocked
         (the second event would create a divergent set containing a privileged event.
          Cross-node priv-vs-priv races resolve at the federation layer
-         via the contested-prefix table.)
+         via the irreconcilable-prefix table.)
 ```
 
 The chain stays at its prior state. There is no intermediate divergent state on IEL.
@@ -170,7 +170,7 @@ All IEL queries use `ORDER BY serial ASC, CASE kind ... END ASC, said ASC` for d
 
 IEL chains are linear per-node (Active or Decommissioned). Gossip propagation sends the chain as a single full-chain stream that the receiver applies as a normal append. Divergent sets cannot form locally on IEL, so there is no partitioning needed for divergent state.
 
-Cross-node priv-vs-priv races (each `Evl`/`Dec` landing cleanly on its submitting node, gossip-arriving competing event rejected by the seal-cap) surface via the contested-prefix table at the infrastructure layer rather than as in-protocol partitioning. See [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205).
+Cross-node priv-vs-priv races (each `Evl`/`Dec` landing cleanly on its submitting node, gossip-arriving competing event rejected by the seal-cap) surface via the irreconcilable-prefix table at the infrastructure layer rather than as in-protocol partitioning. See [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205).
 
 ## Key Invariants
 

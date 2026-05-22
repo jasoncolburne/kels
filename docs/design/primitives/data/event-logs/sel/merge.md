@@ -103,7 +103,7 @@ if chain has any Dec event → reject DecommissionedSel
                               sits at-or-before Dec's parent.)
 ```
 
-Fires before all other routing. Decommissioned is the only per-node terminal state on SEL; the seal-cap rejects every submission. Cross-node priv-vs-priv races resolve at the federation layer via the contested-prefix table (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
+Fires before all other routing. Decommissioned is the only per-node terminal state on SEL; the seal-cap rejects every submission. Cross-node priv-vs-priv races resolve at the federation layer via the irreconcilable-prefix table (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
 
 ### 4. Deduplication
 

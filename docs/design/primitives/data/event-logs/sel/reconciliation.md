@@ -97,7 +97,7 @@ Each cell describes what happens when gossip syncs a chain from a source node (r
 - **Send-side partitioning** (Source: Divergent, Source: Repaired) — the source partitions the chain into sub-batches the sink will accept under its routing rules. See [merge.md §Gossip Send-Side Partitioning](merge.md#gossip-send-side-partitioning-divergent-sels).
 - **Decommissioned → Divergent sink** — `Dec` cannot resolve divergence; sink stays divergent until `Rpr` lands.
 - **Divergent → Divergent sink** — effective SAIDs match by construction; full anti-entropy may reconcile any-missing-branch-events even when SAIDs already match.
-- **Cross-node priv-vs-priv races** — when sources/sinks land different competing privileged events (e.g., different `Est` SAIDs at v=1 from a camping race, or `Sea`/`Dec` races at later serials), the seal-cap rejects each peer's gossip-arriving event. Federation-level convergence resolves at the infrastructure layer via the contested-prefix table (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)). See [§Race matrix](#race-matrix) below.
+- **Cross-node priv-vs-priv races** — when sources/sinks land different competing privileged events (e.g., different `Est` SAIDs at v=1 from a camping race, or `Sea`/`Dec` races at later serials), the seal-cap rejects each peer's gossip-arriving event. Federation-level convergence resolves at the infrastructure layer via the irreconcilable-prefix table (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)). See [§Race matrix](#race-matrix) below.
 
 The matrix is smaller than KEL's because SEL's discriminator handles repair-driven archival inline; the source-side partitioning (`send_divergent_sel_events`) ensures each sub-batch routes through a single discriminator predicate at the sink, so the matrix collapses around the source's terminal state rather than expanding into per-sub-batch cases.
 
@@ -259,7 +259,7 @@ All nodes converge on the same effective SAID (tip event SAID).
 
 ### 5. Adversary races inception — merge-layer rejection at v=1
 
-`Est` is privileged at tier 2. A second `Est` for the same `(identity, topic)` whose SAID differs from the locally-resident `Est` is rejected at the merge layer per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). Each node retains whichever `Est` arrived first locally. Cross-node disagreement surfaces via the contested-prefix table; the federation cannot extend the chain forward under either branch without operator-level reconciliation. Operator recourse against a successful camp is reincept under a new `(identity, topic)` tuple.
+`Est` is privileged at tier 2. A second `Est` for the same `(identity, topic)` whose SAID differs from the locally-resident `Est` is rejected at the merge layer per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). Each node retains whichever `Est` arrived first locally. Cross-node disagreement surfaces via the irreconcilable-prefix table; the federation cannot extend the chain forward under either branch without operator-level reconciliation. Operator recourse against a successful camp is reincept under a new `(identity, topic)` tuple.
 
 Adversary submits `[Icp, Est_camper]` — Icp is permissionless (dedup-idempotent across submitters), `Est_camper` carries the camper's `ielEvent` binding. On the receiving node the chain is born with camper's content at v=1. Operator submits `[Icp, Est_operator]` with `Est_operator.previous = Icp.said` (extending `Icp` directly via dedup-equivalence; the operator never extends `Est_camper` per [../../../../protocol-doctrine.md §Extension Discipline](../../../../protocol-doctrine.md#extension-discipline)). `Icp` dedups; the second `Est` is rejected at merge.
 
@@ -287,7 +287,7 @@ Step 3 — Cross-node state:
   Node A: [Icp, Est_camper]      (effective SAID = Est_camper.said)
   Node B: [Icp, Est_operator]    (effective SAID = Est_operator.said)
 
-  Federation surfaces the disagreement via the contested-prefix table per
+  Federation surfaces the disagreement via the irreconcilable-prefix table per
   [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races).
   Consumers see the prefix as in-dispute.
 
@@ -337,7 +337,7 @@ not extending the live branch's tip) is not blocked by this rule (see
 
 ### 7. SEL bound to an IEL event that is no longer extension-safe
 
-On IEL, divergent sets cannot form locally (every IEL event is privileged; a second event at the same serial is rejected at merge per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal)). Cross-node priv-vs-priv races on IEL surface via the contested-prefix table at the federation layer. SEL events bound to an above-seal IEL event — whether the IEL is the operator's local view or another federation node's — fail the `IelDivergent`/above-seal check. Operator's recovery path is to bind future SEL events at-or-below the IEL's seal, or to incept a new SEL bound to a different IEL.
+On IEL, divergent sets cannot form locally (every IEL event is privileged; a second event at the same serial is rejected at merge per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal)). Cross-node priv-vs-priv races on IEL surface via the irreconcilable-prefix table at the federation layer. SEL events bound to an above-seal IEL event — whether the IEL is the operator's local view or another federation node's — fail the `IelDivergent`/above-seal check. Operator's recovery path is to bind future SEL events at-or-below the IEL's seal, or to incept a new SEL bound to a different IEL.
 
 ```
 IEL chain on Node A (federation-disputed at v_d via priv-vs-priv race):
@@ -404,11 +404,11 @@ Gossip propagates:
     A ≠ B → federation does not converge at the protocol layer.
 ```
 
-Federation-level convergence in this scenario is provided at the infrastructure layer via a contested-prefix table that nodes maintain and gossip-sync; see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205) for the design. The seal-cap stays unconditional; relaxing it to admit competing events at a sealed serial would re-open a stale-authority killswitch surface.
+Federation-level convergence in this scenario is provided at the infrastructure layer via a irreconcilable-prefix table that nodes maintain and gossip-sync; see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205) for the design. The seal-cap stays unconditional; relaxing it to admit competing events at a sealed serial would re-open a stale-authority killswitch surface.
 
 ## Race matrix
 
-Concurrent priv-vs-priv races between federation peers — both submitting privileged events extending the same parent `v_{d-1}` to different nodes — uniformly resolve via the same shape: each event lands as a clean linear-chain extension on its submitting node and advances the local seal; gossip then delivers each event to the other node, where the seal-cap rejects it (parent in locked portion). The chain does not structurally converge at the protocol layer; federation-level convergence is provided at the infrastructure layer via the contested-prefix table (see [#205](https://github.com/jasoncolburne/kels/issues/205)).
+Concurrent priv-vs-priv races between federation peers — both submitting privileged events extending the same parent `v_{d-1}` to different nodes — uniformly resolve via the same shape: each event lands as a clean linear-chain extension on its submitting node and advances the local seal; gossip then delivers each event to the other node, where the seal-cap rejects it (parent in locked portion). The chain does not structurally converge at the protocol layer; federation-level convergence is provided at the infrastructure layer via the irreconcilable-prefix table (see [#205](https://github.com/jasoncolburne/kels/issues/205)).
 
 The race participants — any pairing across `{Rpr, Sea, Dec}` (plus `Est`-vs-`Est` at v=1 as the inception-specific case) — produce identical structural outcomes per-node:
 
@@ -416,7 +416,7 @@ The race participants — any pairing across `{Rpr, Sea, Dec}` (plus `Est`-vs-`E
 - The gossip-arriving competing event is rejected by the seal-cap with `ParentLocked` (or `DecommissionedSel` on the Dec'd side, equivalently a seal-cap rejection).
 - Federation-level convergence is via #205.
 
-The `Est`-vs-`Est` v=1 case is the inception-specific instance of the same rule: a second `Est` whose landing would create a divergent set is rejected at merge per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). Each node retains whichever `Est` arrived first locally; the federation surfaces cross-node disagreement via the contested-prefix table (operator recourse: reincept under a new `(identity, topic)`). See [§5 Adversary races inception](#5-adversary-races-inception--merge-layer-rejection-at-v1) for the worked walkthrough.
+The `Est`-vs-`Est` v=1 case is the inception-specific instance of the same rule: a second `Est` whose landing would create a divergent set is rejected at merge per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). Each node retains whichever `Est` arrived first locally; the federation surfaces cross-node disagreement via the irreconcilable-prefix table (operator recourse: reincept under a new `(identity, topic)`). See [§5 Adversary races inception](#5-adversary-races-inception--merge-layer-rejection-at-v1) for the worked walkthrough.
 
 ## References
 

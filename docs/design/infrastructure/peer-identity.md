@@ -135,7 +135,7 @@ The gossip-handshake authorization gate covers participation in the gossip mesh.
 
 ### Federation IEL prefix warning at startup
 
-- Runtime `FEDERATION_IEL_PREFIX` env var differs from the compile-time default. Expected during contested-federation recovery (see [federation.md §Recovery](federation.md#recovery)). Confirm the runtime value is the intended new federation IEL prefix.
+- Runtime `FEDERATION_IEL_PREFIX` env var differs from the compile-time default. Expected during irreconcilable-federation recovery (see [federation.md §Recovery](federation.md#recovery)). Confirm the runtime value is the intended new federation IEL prefix.
 
 ## References
 

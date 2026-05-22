@@ -87,7 +87,7 @@ Assumption: identity material is unrecoverable (HSM lost; or no backup of identi
 3. The exclusion `Evl` lands at `v_N` and advances the IEL seal to `seal_serial = N`. The seal-cap rejects any subsequent submission whose parent sits at-or-before `v_{N-1}` — so a rotated-out `P_old` satisfier cannot land a competing privileged event extending `v_{N-1}` from this point forward. Any submission they construct against `v_N` itself requires `P_new` authority, which by definition they do not satisfy. The exclusion is structurally complete with a single `Evl`.
 4. From here, the §Adding a new peer flow for the new identity (steps 1–4).
 
-For federation-IEL-contested recovery (a different, harder case — the federation IEL itself is dead under its current prefix), see [federation.md §Recovery](federation.md#recovery).
+For federation-IEL-irreconcilable recovery (a different, harder case — the federation IEL itself is dead under its current prefix), see [federation.md §Recovery](federation.md#recovery).
 
 Gossip cannot do the initial pull itself in any of these modes: handshakes authorize against the federation IEL, which is exactly what a fresh node doesn't have. `transfer_*_events` is the bootstrap channel; gossip takes over once the node has the federation IEL and the address SELs locally.
 

@@ -219,7 +219,7 @@ security-invariant\.md
 # ============================================================================
 # Design renamed `ContestRequired` (merge result / error variant) to
 # `ParentLocked` for clarity. Action-oriented "contest" framing no longer
-# matches #214 doctrine (per-node Contested removed; contestation is
+# matches #214 doctrine (per-node Contested removed; irreconcilability is
 # federation-layer only via #205). Code rename queued as #206; design is
 # canonical and forbids the old name in docs/prose now (root lint stays
 # permissive until code rename lands).

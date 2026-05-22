@@ -55,7 +55,7 @@ Before routing, check whether the chain is already terminal:
 if chain has any Dec event in a linear chain → reject KelDecommissioned
 ```
 
-Fires before all other routing. Decommissioned is the only per-node terminal state on KEL; no further events of any kind land. Structurally parallel to IEL/SEL Terminal-State Gates. Cross-node priv-vs-priv races resolve at the federation layer via the contested-prefix table (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races)).
+Fires before all other routing. Decommissioned is the only per-node terminal state on KEL; no further events of any kind land. Structurally parallel to IEL/SEL Terminal-State Gates. Cross-node priv-vs-priv races resolve at the federation layer via the irreconcilable-prefix table (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races)).
 
 ### 3. Routing
 
@@ -138,7 +138,7 @@ if batch contains a privileged event with previous = v_{d-1}.said:
         (per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal):
          landing would create a divergent set containing a privileged event.
          Cross-node priv-vs-priv races resolve at the federation layer
-         via the contested-prefix table.)
+         via the irreconcilable-prefix table.)
 ```
 
 **No `rec` or rejected privileged event in batch**:
@@ -201,7 +201,7 @@ return Diverged
          └───────┘
 ```
 
-Privileged events (`Rot`/`Ror`/`Dec`) that would create or join a divergent set are rejected at the merge layer per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal); they produce no state transition. Cross-node priv-vs-priv races resolve at the federation layer via the contested-prefix table.
+Privileged events (`Rot`/`Ror`/`Dec`) that would create or join a divergent set are rejected at the merge layer per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal); they produce no state transition. Cross-node priv-vs-priv races resolve at the federation layer via the irreconcilable-prefix table.
 
 ## Merge Transaction API
 

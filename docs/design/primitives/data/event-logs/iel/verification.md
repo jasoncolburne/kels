@@ -19,7 +19,7 @@ Events are linked by their `previous` SAID. Serial is the position in the chain 
 
 Like SEL, IEL has no per-event signature — authorization is via the *anchoring model*: `authPolicy` and `governancePolicy` resolve to KEL prefixes whose `ixn` events anchor the IEL event's SAID. The verifier resolves these policies through a `PolicyChecker` that fetches and verifies the anchoring KEL events on demand.
 
-The verifier answers a single question: **is this chain shape structurally authentic?** Consumer trust ("should I trust authorization claims from this chain?") is a separate concern handled at the auth/policy layer through `policy_satisfied`, the federation-level dispute signal (per [event-log.md §Federation Disputes and the Trust Layer](event-log.md#federation-disputes-and-the-trust-layer)), and `satisfied_saids`. IEL chains are linear per-node (Active or Decommissioned); cross-node disagreement from federation races surfaces at the infrastructure layer via the contested-prefix table.
+The verifier answers a single question: **is this chain shape structurally authentic?** Consumer trust ("should I trust authorization claims from this chain?") is a separate concern handled at the auth/policy layer through `policy_satisfied`, the federation-level dispute signal (per [event-log.md §Federation Disputes and the Trust Layer](event-log.md#federation-disputes-and-the-trust-layer)), and `satisfied_saids`. IEL chains are linear per-node (Active or Decommissioned); cross-node disagreement from federation races surfaces at the infrastructure layer via the irreconcilable-prefix table.
 
 ## Verification Algorithm
 
@@ -118,7 +118,7 @@ The verifier's terminal-state-determination rule on IEL is structural:
 - Linear with a `Dec` event present? Decommissioned (terminal-via-Dec).
 - Linear without `Dec`? Active.
 
-There is no Divergent state on IEL: every IEL event is privileged, and the merge layer rejects any second event at the same serial per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). Cross-node priv-vs-priv races surface at the federation layer via the contested-prefix table rather than as a per-node verifier-state. If the verifier walk observes two events at the same serial in storage, that is a structural integrity error (storage-layer tampering), not a Divergent state.
+There is no Divergent state on IEL: every IEL event is privileged, and the merge layer rejects any second event at the same serial per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). Cross-node priv-vs-priv races surface at the federation layer via the irreconcilable-prefix table rather than as a per-node verifier-state. If the verifier walk observes two events at the same serial in storage, that is a structural integrity error (storage-layer tampering), not a Divergent state.
 
 The handler-level rejection on decommissioned chains is a separate seam that prevents new submits; this verifier-level rule handles chains that reach the verifier via gossip or backup-restore paths.
 
@@ -181,7 +181,7 @@ Note: There is no content-preservation rule (IEL has no `content` field). There 
 
 Per-node IEL chains are linear (Active or Decommissioned). Divergent sets cannot form locally on IEL — the merge layer rejects any second event at the same serial per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). If the verifier walk observes two events at the same serial in storage, that is a structural integrity error (storage-layer tampering); the verifier returns an error.
 
-Cross-node priv-vs-priv races surface at the federation layer via the contested-prefix table (see [event-log.md §Federation Disputes and the Trust Layer](event-log.md#federation-disputes-and-the-trust-layer)) — not as a per-node verifier state.
+Cross-node priv-vs-priv races surface at the federation layer via the irreconcilable-prefix table (see [event-log.md §Federation Disputes and the Trust Layer](event-log.md#federation-disputes-and-the-trust-layer)) — not as a per-node verifier state.
 
 ## Streaming
 
