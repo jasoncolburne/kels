@@ -28,7 +28,7 @@ SEL verification ensures the following, grouped by concern:
   - `Est` / `Upd` → IEL's tracked `authPolicy` at the bound event
   - `Sea` / `Rpr` / `Dec` → IEL's tracked `governancePolicy` at the bound event
 - The SEL event's SAID is anchored under the resolved IEL policy.
-- Per-event parent-monotonic on `ielEvent` (SEL-specific; no analog on KEL/IEL): each event's `ielEvent` is at-or-after its parent event's `ielEvent` in IEL chain order, applied per branch independently. Within-chain policy variation across SEL branches is bounded by the seal-cap and by privileged-divergence-is-terminal.
+- Per-event parent-monotonic on `ielEvent` (SEL-specific; no analog on KEL/IEL): each event's `ielEvent` is at-or-after its parent event's `ielEvent` in IEL chain order, applied per branch independently. Within-chain policy variation across SEL branches is bounded by the seal-cap and by [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) (privileged events that would create or join a divergent set are rejected at merge).
 
 Events are linked by their `previous` SAID. Serial is the position in the chain (inception is serial 0).
 
@@ -153,7 +153,7 @@ The chain-wide `lastIelEvent` (the highest `ielEvent` across all events in the c
 
 Authorization failures in step 4 (cross-chain authorization) are mapped to either a **hard fail** (merge engine rejects the batch on the verifier's policy-failed output — chain doesn't advance, submit handler rejects) or a **soft fail** (the verifier records the failure on the token but does not advance the branch's per-branch state for the failed event; `policy_satisfied` flips false for the rest of the walk).
 
-**Default: all authorization gates are HARD.** The table below shows that every kind × failure-mode combination is HARD in the normal case. The only exception — soft-fail propagation in the divergent-but-not-yet-contested window — is described in §Post-divergence soft-fail propagation below.
+**Default: all authorization gates are HARD.** The table below shows that every kind × failure-mode combination is HARD in the normal case. The only exception — soft-fail propagation in the divergent window — is described in §Post-divergence soft-fail propagation below.
 
 | Kind | Authorization gate | Anchor failure | Wrong-kind anchor | Binding failure | Parent-monotonic regression |
 |------|--------------------|----------------|-------------------|------------------|------------------------------|
@@ -171,34 +171,26 @@ The rationale for HARD anchor on all events: the DB cannot be trusted (see [../.
 
 #### Post-divergence soft-fail propagation
 
-The verification cutoff for "valid for downstream binding" is `first_divergent_serial`. A privileged event (`Sea` or `Dec`) in a divergent set structurally creates contested-state, so contested chains always have a divergence point. `Dec` landing on a linear chain produces Decommissioned (no cutoff; the Dec event itself is a valid event in the chain). Decommissioned is fully terminal under universal locking — the seal-cap rejects every subsequent submission whose parent sits at-or-before `v_{d-1}`; federation races with concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
+The verification cutoff for "valid for downstream binding" is `first_divergent_serial`. Divergent sets on SEL contain only non-privileged events (`Upd`-`Upd` races at v ≥ 2); privileged events that would create or join a divergent set are rejected at the merge layer per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). `Dec` landing on a linear chain produces Decommissioned (no cutoff; the Dec event itself is a valid event in the chain). Decommissioned is fully terminal under universal locking — the seal-cap rejects every subsequent submission whose parent sits at-or-before `v_{d-1}`; federation races with concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
 
-For events at `serial >= first_divergent_serial` on a chain that is divergent-but-not-yet-contested (non-privileged-divergent — `Upd`-`Upd` race scenarios at v ≥ 2): auth-check failures convert to SOFT. The verifier doesn't return Err; it sets the chain-wide `policy_satisfied = false` and continues. Once the chain is contested (any privileged event in the divergent set), post-divergence events are submitter-indistinguishable per [../../../../protocol-doctrine.md §Trust Model on Contested Chains](../../../../protocol-doctrine.md#trust-model-on-contested-chains), and the per-event soft-fail propagation rule's purpose at post-divergence positions is superseded by that framing. Events at-or-below `lastSealAdvancingEvent` retain structural verifiability per [../../../../protocol-doctrine.md §Pre-divergence verifiability survives contestation](../../../../protocol-doctrine.md#pre-divergence-verifiability-survives-contestation); events above the seal (whether in the seal-to-divergence gap or at-or-above divergence) do not. Structural integrity rules (SAID, serial monotonicity, content preservation, BadIdentityBinding, etc.) stay HARD regardless of position.
+For events at `serial >= first_divergent_serial` on a Divergent chain (`Upd`-`Upd` race scenarios at v ≥ 2): auth-check failures convert to SOFT. The verifier doesn't return Err; it sets the chain-wide `policy_satisfied = false` and continues. Events at-or-below `lastSealAdvancingEvent` retain structural verifiability per [../../../../protocol-doctrine.md §Pre-seal verifiability](../../../../protocol-doctrine.md#pre-seal-verifiability); events above the seal do not. Structural integrity rules (SAID, serial monotonicity, content preservation, BadIdentityBinding, etc.) stay HARD regardless of position.
 
-Why preserve rather than reject during the divergent-but-not-yet-contested window: hard-rejecting above-seal events would discard them from the forensic record and bounce the entire verification, leaving consumers unable to read at-or-below-seal state. Soft-fail preserves the events structurally while making clear that verification doesn't bless them. Once the chain transitions to contested (privileged-divergence rule fires), the contested-state framing supersedes for above-seal events — they are not structurally trustworthy (tier-1 gap below divergence; submitter-indistinguishable at-or-above) and don't ground new trust decisions — while at-or-below-seal events keep returning `policy_satisfied = true` to consumer queries against at-or-below-seal SAIDs.
+Why preserve rather than reject during the divergent window: hard-rejecting above-seal events would discard them from the forensic record and bounce the entire verification, leaving consumers unable to read at-or-below-seal state. Soft-fail preserves the events structurally while making clear that verification doesn't bless them. Above-seal events are not structurally trustworthy (tier-1-only auth, indistinguishable from signing-key-only adversary capture per [../../../../protocol-doctrine.md §Pre-seal verifiability](../../../../protocol-doctrine.md#pre-seal-verifiability)) and don't ground new trust decisions — while at-or-below-seal events keep returning `policy_satisfied = true` to consumer queries against at-or-below-seal SAIDs.
 
-This rule is path-agnostic: it fires identically on submit, gossip-receipt, and resume verification paths. The handler-level rejection on contested/decommissioned chains (`merge.md §Terminal-State Gate`) is a separate seam that prevents new submits; this verifier-level mechanism handles events that reach the verifier some other way (gossip-pulled chains where the local node hadn't yet observed the terminal, resume from a stored chain that contains a terminal).
+This rule is path-agnostic: it fires identically on submit, gossip-receipt, and resume verification paths. The handler-level rejection on decommissioned chains (`merge.md §Terminal-State Gate`) is a separate seam that prevents new submits; this verifier-level mechanism handles events that reach the verifier some other way (gossip-pulled chains where the local node hadn't yet observed the terminal, resume from a stored chain that contains a terminal).
 
 ### Terminal-state determination
 
 The verifier's terminal-state-determination rule simplifies to:
-- Divergent at `v_d`?
-  - No → linear (Active or Decommissioned via Dec).
-  - Yes → divergent set contains a privileged event (`Sea` or `Dec`)?
-    - Yes → Contested (terminal).
-    - No → Divergent (recoverable via `Rpr`).
+- Divergent at `v_d`? (a divergent set exists in the chain data; on SEL only non-privileged `Upd`-`Upd` divergent sets at v ≥ 2 can form, per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal))
+  - Yes → Divergent (recoverable via `Rpr`).
+  - No → Linear (Active, or Decommissioned via `Dec`).
 
-### Privileged event parent resolution
+### Privileged-event merge-layer rejection
 
-A privileged event (`Sea` or `Dec`) with `previous = v_{d-1}.said` and `serial = d` lands at `v_d` extending the divergence ancestor; this is the shape that creates contested-state via the upgrade rule joining a non-privileged divergent set at `v_d`. The locked-portion bound prevents `event.previous` from being in the chain's locked portion; on SEL the seal-cap enforces this unconditionally — once the seal advances past `v_{d-1}`, no event extending `v_{d-1}` admits. See [../../../../protocol-doctrine.md §Privileged Divergence is Terminal §Repair-event conditions](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) for the cross-shape derivation and worked diagrams. `v_{d-1}` is the unique parent at `serial − 1` shared across all nodes by chain validity (it lands cleanly before any divergence), making this parent shape cross-node-validatable regardless of which divergent contents each node observed.
+A privileged event (`Sea` or `Dec`) with `previous = v_{d-1}.said` whose landing would create or join a divergent set is rejected at the merge layer per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). The locked-portion bound prevents `event.previous` from being in the chain's locked portion; on SEL the seal-cap enforces this unconditionally — once the seal advances past `v_{d-1}`, no event extending `v_{d-1}` admits. `v_{d-1}` is the unique parent at `serial − 1` shared across all nodes by chain validity (it lands cleanly before any divergence), making the parent shape cross-node-validatable regardless of which divergent contents each node observed.
 
-**Implementation note.** The contesting event is processed inline with the chain walk. When the walk reaches `v_d`, branch state's `tip_iel_event` holds `v_{d-1}.ielEvent` (set when `v_{d-1}` was processed). The contesting event and the existing event(s) at `v_d` are processed as siblings of the same generation; all have parent `v_{d-1}` and all check parent-monotonic against `v_{d-1}.ielEvent` from branch state. After the generation is processed, branch state forks per branch with each branch's own tip ielEvent. No new cache slot in branch state. (Authorization itself resolves via the bound IEL event referenced by the event's own `ielEvent`, not via SEL's branch state; cross-chain via `IelResolver`.)
-
-### Upgrade rule
-
-When a node has a non-privileged divergent set at `v_d` (max 2 events: `Upd`-`Upd` race at v ≥ 2; `Est`-`Est` at v=1 is contested-by-construction via privileged-divergence-is-terminal — `Est` is privileged, so an `Est`-`Est` set is contested at first observation without passing through the upgrade rule) and gossip delivers a privileged event for that same `v_d` (`Sea` or `Dec` with `previous = v_{d-1}.said`), the verifier accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to Contested (terminal).
-
-`Rpr` is the archiving exception — its discriminator removes the divergent set before any divergent-set check fires, so it never participates in the upgrade rule (the other privileged kinds — `Sea`, `Dec` — do, when their parent is `v_{d-1}.said`). See [../../../../protocol-doctrine.md §Routing semantics of privileged and archiving kinds](../../../../protocol-doctrine.md#routing-semantics-of-privileged-and-archiving-kinds) for the doctrinal frame.
+`Rpr` is the archiving exception — its discriminator routes through the archival path before any divergent-set check fires, so it resolves rather than creates divergence. See [../../../../protocol-doctrine.md §Routing semantics of privileged and archiving kinds](../../../../protocol-doctrine.md#routing-semantics-of-privileged-and-archiving-kinds) for the doctrinal frame.
 
 ### Caller-bounded SAID querying
 
@@ -235,9 +227,8 @@ SEL branch state does **not** track authorization policies per branch. Those pol
 ```
 SelVerification:
     prefix: Digest256
-    branches: Vec<BranchTip>                  // 1 = linear, 2 = divergent (or 3 with privileged-event upgrade)
+    branches: Vec<BranchTip>                  // 1 = linear, 2 = divergent
     divergenceAncestor: Option<Digest256>    // SAID of v_{d-1} on a divergent chain (None on linear)
-    is_contested: bool
     is_decommissioned: bool
     lastSealAdvancingEvent: Option<Digest256>  // SAID of most recent Sea/Rpr
     lastIelEvent: Option<Digest256>    // derived aggregate: max ielEvent across all events in the chain
@@ -253,7 +244,7 @@ Accessors:
 - `lastSealAdvancingEvent()` — SAID of the most recent `Sea`/`Rpr`
 - `divergenceAncestor()` — SAID of `v_{d-1}` on a divergent chain (`None` on linear)
 - `is_divergent()` — `branches.len() > 1`.
-- `is_contested()`, `is_decommissioned()`
+- `is_decommissioned()`
 
 ## Key Properties Verified
 
@@ -282,7 +273,7 @@ Verification does NOT fail on divergence. Instead:
 
 ## Streaming
 
-SEL verification follows the cross-primitive streaming pattern (see [../../../../protocol-doctrine.md §Streaming](../../../../protocol-doctrine.md#streaming)). Verifier type: `SelVerifier`. Proof-of-verification token: `SelVerification`. Per-SEL specifics: cross-chain `ielEvent` resolution via `IelResolver` (separate trait from `PolicyChecker` — see §Two-trait split below); per-event parent-monotonic check on `ielEvent` walked per-branch; post-divergence soft-fail propagation on non-privileged divergent sets; constructors `new` / `resume`.
+SEL verification follows the cross-primitive streaming pattern (see [../../../../protocol-doctrine.md §Streaming](../../../../protocol-doctrine.md#streaming)). Verifier type: `SelVerifier`. Proof-of-verification token: `SelVerification`. Per-SEL specifics: cross-chain `ielEvent` resolution via `IelResolver` (separate trait from `PolicyChecker` — see §Two-trait split below); per-event parent-monotonic check on `ielEvent` walked per-branch; post-divergence soft-fail propagation on divergent sets; constructors `new` / `resume`.
 
 `SelVerifier` walks forward through events page by page, verifying integrity and authorization without loading the full chain into memory.
 
@@ -294,7 +285,6 @@ struct SelVerifier {
     branches: HashMap<Digest256, BranchState>,
     last_verified_serial: Option<u64>,
     divergenceAncestor: Option<Digest256>,
-    is_contested: bool,
     is_decommissioned: bool,
     ...
 }
@@ -334,8 +324,8 @@ trait IelResolver: Send + Sync {
     /// (carry-forward already applied at IEL verification time — no chain
     /// walk here). Returns IelDivergent when the bound event lives above
     /// the IEL's `lastSealAdvancingEvent`; events at-or-below the seal
-    /// resolve cleanly even on a divergent IEL (the seal stays at the
-    /// prior linear-portion advance on a contested chain by construction).
+    /// resolve cleanly (the seal never forks; see
+    /// [../../../../protocol-doctrine.md §Pre-seal verifiability](../../../../protocol-doctrine.md#pre-seal-verifiability)).
     async fn resolve_auth_policy_at(&self, identity: &Digest256, iel_event_said: &Digest256)
         -> Result<Digest256, KelsError>;
     async fn resolve_governance_policy_at(&self, identity: &Digest256, iel_event_said: &Digest256)
@@ -369,7 +359,7 @@ The validation rules above apply identically at submit, gossip ingestion, bootst
 
 ## References
 
-- [event-log.md](event-log.md) — Chain lifecycle, repair, contest, decommission.
+- [event-log.md](event-log.md) — Chain lifecycle, repair, decommission.
 - [merge.md](merge.md) — Submit-handler routing.
 - [reconciliation.md](reconciliation.md) — Multi-node correctness matrix.
 - [events.md](events.md) — Per-kind structural rules.

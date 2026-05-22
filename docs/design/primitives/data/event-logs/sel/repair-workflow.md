@@ -17,7 +17,7 @@ The builder API exposes two terminal-state operations on `SadEventBuilder`:
 
 | Operation | When to use | Signature |
 |-----------|-------------|-----------|
-| `repair()` | Chain is non-privileged-divergent or owner's tip is behind server's | Bundles pending; appends `Rpr` extending owner's authentic tip |
+| `repair()` | Chain is divergent (`Upd`-`Upd` at v ≥ 2) or owner's tip is behind server's | Bundles pending; appends `Rpr` extending owner's authentic tip |
 | `decommission()` | Owner is ending the chain | Bundles pending; appends `Dec`; chain becomes terminal |
 
 Each operation runs the same pre-flight:
@@ -38,7 +38,7 @@ For full algorithmic detail of the discriminator that runs server-side, see [eve
 ## CLI Commands
 
 ```bash
-kels-cli sel repair        --prefix <prefix>     # Resolve non-privileged divergence; archives adversary events
+kels-cli sel repair        --prefix <prefix>     # Resolve divergence; archives adversary events
 kels-cli sel decommission  --prefix <prefix>     # Terminal end via Dec
 kels-cli sel get           <prefix>              # Fetch a SEL from the server (for inspection)
 kels-cli sel status        --prefix <prefix>     # Show local chain status (verification token)
@@ -72,7 +72,7 @@ When a chain divergence is observed:
 1. Owner inspects: `kels-cli sel status --prefix <prefix>` shows `divergenceAncestor: Some(said)`.
 2. Owner inspects server: `kels-cli sel get <prefix>` returns the divergent branches.
 3. Owner decides based on chain state:
-   - **Non-privileged divergence** (`Upd`-`Upd` race at v ≥ 2) with seal not advanced past their view → run `repair`. Adversary events archived synchronously. (`Est`-`Est` race at v=1 is contested-terminal, not repair-resolvable; operator response is reincept under a new `(identity, topic)`.)
+   - **Divergence** (`Upd`-`Upd` race at v ≥ 2) with seal not advanced past their view → run `repair`. Adversary events archived synchronously. (`Est`-`Est` competition at v=1 is rejected at the merge layer per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal); the federation surfaces cross-node disagreement via the irreconcilable-prefix table. Operator response is reincept under a new `(identity, topic)`.)
    - **Sealed past view** (`ParentLocked` returned by submit) → accept the new state, run `decommission`, or rotate the bound IEL's governance via IEL `Evl` (out-of-band recourse if the IEL-side governance has been compromised).
    - **Chain no longer needed** → run `decommission`.
 4. Gossip propagates the resolution to all peer nodes.

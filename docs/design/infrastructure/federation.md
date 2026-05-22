@@ -224,7 +224,7 @@ The general policy DSL stays unconstrained — other IELs (user identities, orga
 
 ### Multi-peer simultaneous compromise
 
-If `n − M` or more member identities are compromised at once, normal governance cannot evolve — the honest members cannot reach the threshold. Recovery is the contested-federation procedure (see [§Recovery](#recovery) below). This is the operationally catastrophic case; the threshold formula is sized so that blocking governance requires compromising a non-trivial fraction of the federation, which raises the operational hardness of mounting the attack — but it is operational hardness, not protocol-level prevention.
+If `n − M` or more member identities are compromised at once, normal governance cannot evolve — the honest members cannot reach the threshold. Recovery is the irreconcilable-federation procedure (see [§Recovery](#recovery) below). This is the operationally catastrophic case; the threshold formula is sized so that blocking governance requires compromising a non-trivial fraction of the federation, which raises the operational hardness of mounting the attack — but it is operational hardness, not protocol-level prevention.
 
 ## Bootstrap (one-time ceremony)
 
@@ -259,7 +259,7 @@ Each node needs to know which federation IEL is its federation. The prefix is co
 - **Compile-time default**: a federation IEL prefix is baked into the binary at build. This is the federation-as-shipped — the prefix the binary was tested and audited against.
 - **Runtime override** (`FEDERATION_IEL_PREFIX`): optional env var. When set, the binary uses the env var as authoritative. If it differs from the compile-time default, the binary logs a startup warning so operators are aware the deployment has been redirected.
 
-The runtime override exists for recovery: operators can repoint a federation to a fresh IEL prefix on existing binaries when the federation IEL becomes contested, then align the compile-time default at the next release.
+The runtime override exists for recovery: operators can repoint a federation to a fresh IEL prefix on existing binaries when the federation IEL becomes federation-disputed beyond reconciliation, then align the compile-time default at the next release.
 
 HSM and gossip identity config: see [gossip.md](gossip.md) and [peer-identity.md](peer-identity.md).
 
@@ -267,7 +267,7 @@ Bootstrap and onboarding flows use `transfer_*_events` parameterized with the co
 
 ## Concurrent-Evl coordination
 
-The federation IEL is exposed to the same divergence risk as any IEL: two governance-authorized parties submitting concurrent `Evl` events at the same serial diverge the chain, and IEL divergence is structurally contested-terminal (see [primitives/data/event-logs/iel/event-log.md §Divergence is Contested-Terminal](../primitives/data/event-logs/iel/event-log.md#divergence-is-contested-terminal)). Federation IEL divergence is catastrophic — the federation dies under that prefix.
+The federation IEL is exposed to the same federation-race risk as any IEL: two governance-authorized parties submitting concurrent `Evl` events to different nodes produce cross-node disagreement surfaced via the irreconcilable-prefix table (see [primitives/data/event-logs/iel/event-log.md §Privileged-event merge-layer rejection](../primitives/data/event-logs/iel/event-log.md#privileged-event-merge-layer-rejection) and [../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../protocol-doctrine.md#concurrent-privileged-event-races)). Federation IEL dispute at the federation layer is catastrophic — the federation cannot extend forward under either branch without operator-level reconciliation, and the operational response is reincept under a new federation IEL prefix.
 
 The protocol does not prevent this. The defense is operational:
 
@@ -280,16 +280,16 @@ Multi-party governance guidance is generic across IEL identities (federation roo
 
 ## Recovery
 
-If the federation IEL goes contested (concurrent `Evl`s land, divergence is detected, the chain becomes contested-terminal), the federation under that prefix is dead. Recovery is a same-shape ceremony as the original bootstrap.
+If the federation IEL becomes federation-disputed beyond reconciliation (concurrent `Evl`s land on different nodes, the irreconcilable-prefix table surfaces the disagreement, and operator-level reconciliation fails), the federation under that prefix is dead for forward extension. Recovery is a same-shape ceremony as the original bootstrap.
 
 ### Runbook
 
-1. **Confirm contest.** Multiple nodes report the federation IEL as contested via the standard IEL contested-state surface. (Gossip will have propagated the divergent set; every node will see the same contest.)
-2. **Convene currently-trusted operators.** Out-of-band coordination among the operators who collectively can incept a replacement. This is operator policy, not protocol-pinned — it's whoever the operator community trusts to satisfy the new IEL's `governancePolicy`. In the most common case, this is the surviving honest members of the contested federation.
+1. **Confirm dispute.** Multiple nodes report the federation IEL as in-dispute via the irreconcilable-prefix table at the federation layer. (Each node retains its locally-landed first-receive; the federation-layer signal is what surfaces the disagreement.)
+2. **Convene currently-trusted operators.** Out-of-band coordination among the operators who collectively can incept a replacement. This is operator policy, not protocol-pinned — it's whoever the operator community trusts to satisfy the new IEL's `governancePolicy`. In the most common case, this is the surviving honest members of the previous federation.
 3. **Bootstrap a fresh federation IEL.** Same ceremony as initial bootstrap: choose a primary, collect Icp signatures from the participating operators, assemble the new Icp, distribute the new federation IEL to all founding nodes via `transfer_*_events`.
 4. **Distribute the new prefix as runtime override.** Every gossip node sets `FEDERATION_IEL_PREFIX` to the new prefix and restarts. Each node logs a startup warning (runtime value differs from compile-time default); this is expected and acknowledged.
 5. **Verify mesh comes up against new prefix.** Discovery flow on each node now reads the new federation IEL's `authPolicy`, walks the founding members' address SELs (unchanged — they're under the peers' own identities, not under the federation IEL), and reconnects.
-6. **Each peer publishes a fresh address `[Upd, Sea]`** whose SAD `readPolicy` references the *new* federation IEL prefix. Existing address SADs reference a `readPolicy` SAD naming the old (now contested-terminal) federation IEL; `identity(OLD_FED_IEL)` resolves to a dead policy, so the old SAD bodies become unreadable to anyone post-recovery. The address SEL chain itself continues unchanged (per §What survives recovery); only the SAD content needs republication. Until each peer's republish lands, that peer's endpoints are not fetchable by other federation members.
+6. **Each peer publishes a fresh address `[Upd, Sea]`** whose SAD `readPolicy` references the *new* federation IEL prefix. Existing address SADs reference a `readPolicy` SAD naming the old (now federation-disputed) federation IEL; `identity(OLD_FED_IEL)` resolves to a federation-blocked policy, so the old SAD bodies become unreadable to anyone post-recovery. The address SEL chain itself continues unchanged (per §What survives recovery); only the SAD content needs republication. Until each peer's republish lands, that peer's endpoints are not fetchable by other federation members.
 7. **Schedule a binary rebuild.** At leisure, rebuild binaries with the compile-time default updated to the new prefix and roll the deployment. Once defaults align, `FEDERATION_IEL_PREFIX` can be unset.
 
 ### What survives recovery
@@ -302,11 +302,11 @@ What changes: the federation IEL prefix, the binaries' `authPolicy` lookup targe
 
 ### What does not survive
 
-A contested federation IEL stays contested forever — that is the structural meaning of contested-terminal. The replacement federation IEL is a *different* identity under a different prefix; consumers that pinned the old prefix (e.g., long-running client deployments) must be updated. For internal infrastructure this is mechanical; for external clients it is the cost of the contest.
+A federation-disputed federation IEL stays disputed at the federation layer forever — the irreconcilable-prefix table records the disagreement permanently. The replacement federation IEL is a *different* identity under a different prefix; consumers that pinned the old prefix (e.g., long-running client deployments) must be updated. For internal infrastructure this is mechanical; for external clients it is the cost of the federation-level dispute.
 
 ## References
 
-- [primitives/data/event-logs/iel/event-log.md](../primitives/data/event-logs/iel/event-log.md) — IEL chain semantics, policy immunity, divergence, contest.
+- [primitives/data/event-logs/iel/event-log.md](../primitives/data/event-logs/iel/event-log.md) — IEL chain semantics, policy immunity, divergence.
 - [primitives/data/event-logs/iel/events.md](../primitives/data/event-logs/iel/events.md) — event kinds (`Icp`, `Evl`, `Dec`).
 - [protocol-doctrine.md §Federation Convergence](../protocol-doctrine.md#federation-convergence) — the cross-node convergence guarantee the federation relies on.
 - [primitives/data/event-logs/iel/event-log.md §Multi-Party Governance Synchronization](../primitives/data/event-logs/iel/event-log.md#multi-party-governance-synchronization) — out-of-band serialization of IEL `Evl` submissions.

@@ -21,7 +21,7 @@ For chain lifecycle (states, divergence, decommission, evaluation seal), see [ev
 - **No `Upd`** — identity chains carry no "content"; the chain's data is its tracked policy state, mutated only via `Evl`.
 - **No `Est`** — both policies are required at `Icp`. Identity chains have structurally unpredictable prefixes (the inception `nonce` makes the derived prefix unguessable from outside), so they don't need the optional-governance-at-Icp dance that SEL uses for camping defense. SEL `Est` provides camping defense for SEL's well-known-tuple prefix; IEL has no analogous surface.
 - **No `Sea`** — every non-terminal IEL event is a governance act (`Icp` declares policy, `Evl` evolves policy). There is no separate "seal advance without policy change" kind; the seal advances on every `Evl` by construction. SEL `Sea` exists for distinct reasons (the seal-advance cap on SEL chains); IEL has no analogous need.
-- **No `Rpr`** — divergence on IEL is immediately terminal (every IEL event is privileged, so any divergent set fires the privileged-divergence-is-terminal rule). There's no "preserve one branch, archive the other" shape because the protocol cannot adjudicate from chain data when both branches are governance-authorized. See [event-log.md §Divergence is Contested-Terminal](event-log.md#divergence-is-contested-terminal) for the structural argument and [event-log.md §Operator recourse against compromise](event-log.md#operator-recourse-against-compromise) for the recourse paths.
+- **No `Rpr`** — divergent sets cannot form locally on IEL (every IEL event is privileged; the merge layer rejects any second event at the same serial per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal)). There's no divergence for `Rpr` to repair, and no "preserve one branch, archive the other" shape because the protocol cannot adjudicate from chain data when both candidates are governance-authorized. See [event-log.md §Privileged-event merge-layer rejection](event-log.md#privileged-event-merge-layer-rejection) for the structural argument and [event-log.md §Operator recourse against compromise](event-log.md#operator-recourse-against-compromise) for the recourse paths.
 
 ## Per-Kind Field Rules
 
@@ -133,40 +133,33 @@ v2  kind=evl  governancePolicy=G1                        ← governancePolicy ev
 
 Each `Evl` must evolve at least one policy — a no-op Evl (both fields preserved) is rejected as a structural error. There is no "pure-attestation" mode: `lastSealAdvancingEvent` is the evaluation seal, not a heartbeat counter, and key rotation on anchoring KELs is a layer-below concern that doesn't surface as IEL events.
 
-### Divergence is contested-terminal
-
-```
-v0  kind=icp   authPolicy=A0, governancePolicy=G0
-v1  kind=evl   authPolicy=A1
-v2  kind=evl   previous=v1.said, authPolicy=A2_a            ← submission #1 (linear extension of v_1)
-v2' kind=evl   previous=v1.said, authPolicy=A2_b            ← submission #2 (concurrent linear extension on a
-                                                              different node; lands at v_2 on its node)
-    — 2-event divergent set at v_2 (gossip-merged), both with previous = v_1.said.
-      Every IEL event is privileged → privileged-divergence-is-terminal fires
-      immediately; chain becomes contested-terminal as of v_2. —
-```
-
-The two events at `v_2` carry the same `previous = v_1.said` — each was accepted as a linear-chain extension on its submitting node at submission time, with the two extensions independently landing at `v_2`. Valid 2-event pairings on IEL are `Evl`-`Evl` (distinct policy bodies → distinct SAIDs). `Dec` extends the chain's highest-serial event directly (`Dec.previous = parent.said`, where parent is the chain's max-serial event), so it lands only on linear chains and never appears in a divergent set — a `Dec` landing decommissions the chain. Every IEL event is privileged, so the divergent set transitions the chain to contested-terminal immediately by the privileged-divergence-is-terminal rule. **No 3rd event lands at `v_2`** — the contested-state gate rejects all subsequent submissions, including any further `Evl` or `Dec` arriving at v_2 via gossip.
-
-Both events stay in storage forever as forensic record. Operator re-incepts under a new prefix; the inception nonce is always fresh.
-
-This is intentional: history is encoded in the data. Divergence is accepted as the chain's structural admission that governance is no longer single-authoritative. Termination is the honest answer; there is no `Rpr` to archive one branch in favor of the other (every branch is governance-authorized; the protocol has no grounds to declare one "the" branch).
-
-### Concurrent governance-authorized events producing contested-terminal
+### Concurrent Evl on different nodes produces federation-level non-convergence
 
 ```
 v0..v4   normal linear chain (across the federation)
-v5       kind=evl   previous=v_4.said, authPolicy=A5_p1      ← party 1's Evl (extends v_4 on
-                                                               party 1's submitting node)
-v5'      kind=evl   previous=v_4.said, authPolicy=A5_p2      ← party 2's Evl (extends v_4 on
-                                                               party 2's submitting node)
-    — 2-event divergent set at v_5 once both propagate via gossip: {Evl_p1, Evl_p2}.
-      Privileged-divergence-is-terminal fires; chain contested-terminal as of v_5. —
+v5       kind=evl   previous=v_4.said, authPolicy=A5_p1      ← party 1's Evl on Node A
+                                                               (lands cleanly; A's seal advances)
+v5'      kind=evl   previous=v_4.said, authPolicy=A5_p2      ← party 2's Evl on Node B
+                                                               (lands cleanly; B's seal advances)
+
+    Gossip propagation:
+      Node A receives Evl_p2: parent_serial = 4 < seal_serial = 5
+        → rejected by seal-cap. A's tip stays at Evl_p1.
+      Node B receives Evl_p1: parent_serial = 4 < seal_serial = 5
+        → rejected by seal-cap. B's tip stays at Evl_p2.
+
+    Cross-node: A and B do not converge at the protocol layer.
+    Federation surfaces the disagreement via the irreconcilable-prefix table per
+    [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races).
 ```
 
-Each submission is a linear-chain extension on its submitting node's local state at submission time. Two governance-authorized parties — both satisfying the chain's tracked `governancePolicy` at `v_4` — submit `Evl` events concurrently on different nodes. Each `Evl` extends `v_4` and lands at `v_5` on its submitting node. Once gossip merges the two events, the divergent set at v_5 forms, privileged-divergence-is-terminal fires, and the chain becomes contested-terminal.
+Each submission is a linear-chain extension on its submitting node's local state at submission time. Two governance-authorized parties — both satisfying the chain's tracked `governancePolicy` at `v_4` — submit `Evl` events concurrently on different nodes. Each `Evl` extends `v_4` and lands cleanly on its submitting node. Gossip then delivers each event to the other node, where the seal-cap rejects the late arrival.
 
-The structural signature of "race" and "compromise" is identical from the chain's perspective; consumer-side judgment plus out-of-band knowledge is what determines whether to treat this as accidental race or as intentional takeover. Either way, the chain is contested-terminal once the divergent set forms.
+Per-node, each chain stays linear. Cross-node, the federation surfaces the disagreement via the irreconcilable-prefix table; the federation cannot extend the chain forward under either branch without operator-level reconciliation.
+
+The structural signature of "race" and "compromise" is identical from the protocol's perspective; consumer-side judgment plus out-of-band knowledge is what determines whether to treat this as accidental race or as intentional takeover. Either way, federation-level dispute surfaces in the irreconcilable-prefix table.
+
+Same-node submission attempts: a second governance-authorized `Evl` (or `Dec`) attempted at the same serial on a node where the first event has already landed is rejected at the merge layer per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) (its acceptance would create a divergent set containing a privileged event). The chain stays at its prior state.
 
 Operator recourse against compromise — linear governance evolution if the operator still satisfies the policy, or rotating the IEL out of parent policies if the IEL identity itself is compromised — is described in [event-log.md §Operator recourse against compromise](event-log.md#operator-recourse-against-compromise). Forensic "this IEL was compromised" attribution lives out-of-band as a signed statement under the operator's KEL.
 

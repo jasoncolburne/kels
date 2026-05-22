@@ -78,10 +78,9 @@ A set of node prefixes for selective replication. Prefixes are sorted lexicograp
 
 ## Chain Lifecycle
 
-A SEL transitions through states (Active → Divergent → Contested / Decommissioned) driven by the events in the chain itself, not external flags. The **effective SAID** for a chain is its gossip-visible identity:
+A SEL transitions through states (Active ↔ Divergent → Decommissioned) driven by the events in the chain itself, not external flags. Privileged events whose landing would create or join a divergent set are rejected at the merge layer per [../protocol-doctrine.md §Privileged Divergence is Terminal](../protocol-doctrine.md#privileged-divergence-is-terminal); cross-node priv-vs-priv races surface at the federation layer via the irreconcilable-prefix table. The **effective SAID** for a chain is its gossip-visible identity:
 - Linear chain: the tip event's SAID.
 - Divergent chain: `hash_effective_said("divergent:{prefix}")` — synthetic, deterministic, cross-node-consistent.
-- Contested chain: `hash_effective_said("contested:{prefix}")` — terminal.
 - Decommissioned chain: the `Dec` event's SAID — terminal owner-initiated end.
 
 For the full chain lifecycle (divergence detection, repair via discriminator, decommission, evaluation seal, server-observable case taxonomy), see [sel/event-log.md](../primitives/data/event-logs/sel/event-log.md). Repair history and archived events are queryable via the `sad_event_archives`, `sad_event_repairs`, and `sel_repair_events` tables — exposed through the repair endpoints listed below.
@@ -96,7 +95,7 @@ If a node misses the gossip message (e.g., it was offline), the owner submits th
 
 The `SelVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sel_events()`, which performs single-pass structural verification: pages through the chain verifying SAID integrity, chain linkage, serial monotonicity, consistent topic, the IEL `identity` binding (set at Icp), and the per-event parent-monotonic check on `ielEvent` (each event's `ielEvent` must be at-or-after its parent event's, applied per branch). Authorization policies are resolved through `IelResolver` — the verifier does not track them per branch. No signature verification — authorization is via the anchoring model (consumer-side).
 
-Accessors: `branches()`, `current_event()`, `current_content()`, `prefix()`, `topic()`, `events_since_evaluation()`, `policy_satisfied()`, `lastSealAdvancingEvent()`, `lastIelEvent()`, `is_contested()`, `is_decommissioned()`, `divergenceAncestor()`. `lastSealAdvancingEvent()` returns the SAID of the most recent `Sea`/`Rpr` (the evaluation seal). `divergenceAncestor()` returns the SAID of `v_{d-1}` on a divergent chain (the unique parent of all events at the divergence point), `None` on a linear chain. `lastIelEvent()` is a derived aggregate — the highest IEL event SAID across all events in the chain. (On a divergent chain it's the max across all branches' tip iel_events.) The `is_contested` / `is_decommissioned` / `divergenceAncestor` accessors expose lifecycle state — see [sel/event-log.md](../primitives/data/event-logs/sel/event-log.md) for the state model.
+Accessors: `branches()`, `current_event()`, `current_content()`, `prefix()`, `topic()`, `events_since_evaluation()`, `policy_satisfied()`, `lastSealAdvancingEvent()`, `lastIelEvent()`, `is_decommissioned()`, `divergenceAncestor()`. `lastSealAdvancingEvent()` returns the SAID of the most recent `Sea`/`Rpr` (the evaluation seal). `divergenceAncestor()` returns the SAID of `v_{d-1}` on a divergent chain (the unique parent of all events at the divergence point), `None` on a linear chain. `lastIelEvent()` is a derived aggregate — the highest IEL event SAID across all events in the chain. (On a divergent chain it's the max across all branches' tip iel_events.) The `is_decommissioned` / `divergenceAncestor` accessors expose lifecycle state — see [sel/event-log.md](../primitives/data/event-logs/sel/event-log.md) for the state model.
 
 ## Policy Evaluation Modes
 

@@ -8,8 +8,8 @@ The merge operation integrates new events into an existing KEL while handling:
 - Normal event appends
 - Idempotent resubmissions
 - Divergence detection (conflicting events at the same generation)
-- Recovery from non-privileged divergence (via `Rec`)
-- Contested-state transitions (a privileged event — `Rot`/`Ror`/`Dec` — lands in a divergent set, firing privileged-divergence-is-terminal)
+- Recovery from divergence (via `Rec`)
+- Merge-layer rejection of privileged events that would create or join a divergent set (per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal))
 
 Events are linked by their `previous` SAID field. Generation is the position in the chain (inception is generation 0), computed by counting `previous` links back to inception.
 
@@ -28,10 +28,9 @@ During recovery, the discriminator identifies the events on the branch not exten
 |--------|---------|-----------------|
 | `Accepted` | Events accepted normally | OK |
 | `Recovered` | Recovery succeeded, non-surviving branch events archived | OK |
-| `Diverged` | Non-privileged divergence first detected, recoverable via `Rec` | Divergent (non-privileged, recoverable) |
-| `Contested` | Privileged event (`Rot`/`Ror`/`Dec`) landed in divergent set; chain permanently terminal | Contested |
-| `RecoverRequired` | KEL is non-privileged-divergent; only `Rec` or a privileged event (`Rot`/`Ror`/`Dec`) accepted | Divergent (non-privileged) |
-| `ParentLocked` | Seal advanced in divergent set; only a privileged event (`Rot`/`Ror`/`Dec`) can resolve | Unchanged |
+| `Diverged` | Divergence first detected, recoverable via `Rec` | Divergent |
+| `RecoverRequired` | KEL is divergent; only `Rec` accepted (privileged events are rejected per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal)) | Divergent |
+| `ParentLocked` | Submission's parent sits in the locked portion behind the seal (also returned when a privileged event's landing would create or join a divergent set) | Unchanged |
 
 ## Merge Flow
 
@@ -53,11 +52,10 @@ The `KelVerification` token is the trusted context for all routing decisions. Th
 Before routing, check whether the chain is already terminal:
 
 ```
-if chain is contested (divergent + contains Rot, Ror, or Dec) → reject ContestedKel
 if chain has any Dec event in a linear chain → reject KelDecommissioned
 ```
 
-Fires before all other routing. Terminal state means no further events of any kind. Structurally parallel to IEL/SEL Terminal-State Gates.
+Fires before all other routing. Decommissioned is the only per-node terminal state on KEL; no further events of any kind land. Structurally parallel to IEL/SEL Terminal-State Gates. Cross-node priv-vs-priv races resolve at the federation layer via the irreconcilable-prefix table (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races)).
 
 ### 3. Routing
 
@@ -74,7 +72,7 @@ else:
 
 ### 4. Normal Append (~99% of submissions)
 
-Events chain directly from the current tip of a non-divergent KEL. Decommissioned and Contested chains are handled by §2 Terminal-State Gate and cannot reach this branch (a Dec'd chain's tip is `Dec`, which is terminal — nothing extends it; a Contested chain rejects all submissions).
+Events chain directly from the current tip of a non-divergent KEL. Decommissioned chains are handled by §2 Terminal-State Gate and cannot reach this branch (a Dec'd chain's tip is `Dec`, which is terminal — nothing extends it).
 
 ```
 continue KEL verification with submitted events (via KelVerifier::resume from tip)
@@ -83,7 +81,7 @@ insert events
 return Accepted
 ```
 
-A privileged event extending `v_{d-1}` (rather than tip) is not a normal append — its `previous = v_{d-1}.said` does not chain from the current tip and routing sends it to §6 Full Path (Overlap subbranch), where it lands at `v_d` and triggers the contested transition.
+A privileged event extending `v_{d-1}` (rather than tip) is not a normal append — its `previous = v_{d-1}.said` does not chain from the current tip and routing sends it to §6 Full Path (Overlap subbranch), where the merge layer rejects it per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) (landing would create or join a divergent set).
 
 ### 5. New KEL
 
@@ -100,7 +98,7 @@ return Accepted
 
 Reached when events don't chain from the current tip and the KEL is not empty. Handles deduplication, divergent KELs, and overlap submissions.
 
-This handler subdivides into: §6a Dedup → §6b Divergent KEL (Rec resolves to Recovered | privileged event upgrades to Contested | else) → §6c Overlap (Rec batch resolves to Recovered | privileged event creates Contested | else).
+This handler subdivides into: §6a Dedup → §6b Divergent KEL (Rec resolves to Recovered | privileged event rejected at merge | else) → §6c Overlap (Rec batch resolves to Recovered | privileged event rejected at merge | else).
 
 #### 6a. Deduplication
 
@@ -133,18 +131,17 @@ if batch contains a rec event:
     return Recovered
 ```
 
-**Upgrade-to-contested path** (a privileged event — `Rot`, `Ror`, or `Dec` — with `previous = v_{d-1}.said`, must be last):
+**Privileged-event rejection** (a privileged event — `Rot`, `Ror`, or `Dec` — with `previous = v_{d-1}.said`):
 ```
 if batch contains a privileged event with previous = v_{d-1}.said:
-    if the privileged event is not the last event: return Error("Privileged contest event must be last")
-    continue KEL verification with submitted events
-    check seal-advance cap compliance (≤ 62 non-seal-advancing events between Rec/Ror/Rot)
-    insert the privileged event as the 3rd event at v_d
-    return Contested
-        (privileged-divergence-is-terminal fires; chain contested-terminal.)
+    return ParentLocked
+        (per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal):
+         landing would create a divergent set containing a privileged event.
+         Cross-node priv-vs-priv races resolve at the federation layer
+         via the irreconcilable-prefix table.)
 ```
 
-**No `rec` or contesting privileged event in batch**:
+**No `rec` or rejected privileged event in batch**:
 ```
 return RecoverRequired (or ParentLocked if seal already advanced)
 ```
@@ -160,10 +157,7 @@ check seal-advance cap compliance (≤ 62 non-seal-advancing events between Rec/
 
 // Check if existing events from divergence onward advanced the seal
 if existing events advanced the seal:
-    if batch ends in a privileged event (Rot, Ror, or Dec) with previous = v_{d-1}.said:
-        append all events (surviving branch + the contesting event)
-        return Contested
-    return ParentLocked  // Seal already advanced; non-priv extensions and competing Rec rejected
+    return ParentLocked  // Seal already advanced; all extensions of v_{d-1} rejected
 
 // Check for recovery in submitted events
 if batch contains rec:
@@ -172,12 +166,12 @@ if batch contains rec:
     create RecoveryRecord
     return Recovered
 
-// Check for upgrade-to-contested via privileged event
-if batch ends in a privileged event (Rot, Ror, or Dec) with previous = v_{d-1}.said:
-    append all events (surviving branch + the contesting event)
-    return Contested
+// Reject privileged event extending v_{d-1} — would create or join a divergent set
+if batch contains a privileged event (Rot, Ror, or Dec) with previous = v_{d-1}.said:
+    return ParentLocked
+        (per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal))
 
-// No recovery or contesting event — insert single forking event to establish divergence
+// No recovery or rejected event — insert single forking event to establish divergence
 push single divergent event
 return Diverged
 ```
@@ -195,21 +189,19 @@ return Diverged
          detected                  (Dec)
               │                     ▼
               ▼               ┌───────────┐
-       ┌───────────┐          │Decommiss- │
-       │ Divergent │          │   ioned   │
-       │(non-priv) │          └───────────┘
-       └─────┬─────┘
+       ┌───────────┐          │ Decommis- │
+       │ Divergent │          │  sioned   │
+       └─────┬─────┘          └───────────┘
              │
-    ┌────────┴────────────────┐
-    │                         │
-   rec              privileged
-    │              (Rot/Ror/Dec extending v_{d-1})
-    ▼                         ▼
-┌───────┐               ┌───────────┐
-│  OK   │               │ Contested │
-│(recov)│               │ (terminal)│
-└───────┘               └───────────┘
+           rec
+             ▼
+         ┌───────┐
+         │  OK   │
+         │(recov)│
+         └───────┘
 ```
+
+Privileged events (`Rot`/`Ror`/`Dec`) that would create or join a divergent set are rejected at the merge layer per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal); they produce no state transition. Cross-node priv-vs-priv races resolve at the federation layer via the irreconcilable-prefix table.
 
 ## Merge Transaction API
 
@@ -238,9 +230,9 @@ All KEL queries use `ORDER BY serial ASC, CASE kind ... END ASC, said ASC` for d
 
 ## Gossip Send-Side Partitioning (divergent KELs)
 
-Propagating a divergent KEL chain to a remote node requires more than ordering events by canonical chain order. The receiver's submit handler routes batches by content predicates (recovery-vs-contested vs. divergent-rejection); a single batch that contains both pre-divergence events and a post-divergence privileged event would route through "normal append (overlap creates fork)" and the second branch's events get rejected. To make propagation succeed, the SENDER partitions the chain into sub-batches the receiver will accept under its routing rules and sends them in sequence.
+Propagating a divergent KEL chain to a remote node requires more than ordering events by canonical chain order. The receiver's submit handler routes batches by content predicates (recovery-vs-rejection vs. divergent-rejection); a single batch that contains both pre-divergence events and a post-divergence fork event would route through "normal append (overlap creates fork)" and the second branch's events get rejected. To make propagation succeed, the SENDER partitions the chain into sub-batches the receiver will accept under its routing rules and sends them in sequence.
 
-`send_divergent_events` (`lib/kels/src/types/kel/sync.rs:517`) handles the partitioning: longer chain first as paged non-divergent appends, then the contesting / fork event as an atomic batch. See [reconciliation.md §Transfer ordering](reconciliation.md#transfer-ordering) for the per-state matrix and case-handling.
+`send_divergent_events` (`lib/kels/src/types/kel/sync.rs:517`) handles the partitioning: longer chain first as paged non-divergent appends, then the fork event as an atomic batch. See [reconciliation.md §Transfer ordering](reconciliation.md#transfer-ordering) for the per-state matrix and case-handling.
 
 **Why send-side, not receive-side:** receive-side ordering can sort what arrived but cannot fix structural composition problems where the receiver's submit handler will reject a particular batch composition. The sender has full chain visibility and can produce sequences that compose correctly given the receiver's routing rules. Relying on the receiver's submit handler to "figure out" complex batches is invariant-protection reasoning; the cryptographic-soundness argument is that the sender produces sequences that the routing rules accept by construction.
 
@@ -248,14 +240,13 @@ Propagating a divergent KEL chain to a remote node requires more than ordering e
 
 1. **Events are sorted deterministically** by `(serial, kind_priority, said)`. Kind priority: `icp=0, dip=1, ixn=2, rot=3, ror=4, rec=5, dec=6`. The SAID tiebreaker is for determinism only; it has no semantic meaning. See §Why sort priority matters below.
 2. **Only one divergent event added** — when divergence is detected, only the first conflicting event is stored.
-3. **Seal advance in a divergent branch prevents normal recovery** — once any seal-advancing event (`Rec`/`Ror`/`Rot`) exists in a divergent branch, the locked-portion bound rejects further `Rec` submissions against `v_{d-1}` and non-priv submissions return `ParentLocked`. Any privileged event (`Rot`, `Ror`, or `Dec`) extending `v_{d-1}.said` joins the divergent set via the upgrade rule; the divergent set becomes privileged and the chain transitions to Contested via privileged-divergence-is-terminal.
-4. **Contested-termination is the structural outcome of a privileged submission against `v_{d-1}` once the seal has advanced** — the chain becomes Contested when `Rot`, `Ror`, or `Dec` lands extending `v_{d-1}`. Competing `Rec` submissions against `v_{d-1}` on a chain whose seal has already advanced are rejected by the locked-portion bound; federation-level convergence for that race is handled at the infrastructure layer.
-5. **Contested and Decommissioned KELs are fully terminal** — no event of any kind lands. The seal-cap rejects every submission whose parent sits at-or-before the terminal's parent. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
-6. **Branch-scoped verifier input on `Rec`** — Rec verification is branch-scoped, not chain-scoped. The walker's running state never carries the divergent set across the archival boundary. See §Branch-scoped Rec verification below.
+3. **Seal advance in a divergent branch prevents normal recovery** — once any seal-advancing event (`Rec`/`Ror`/`Rot`) exists in a divergent branch, the locked-portion bound rejects further `Rec` submissions against `v_{d-1}` and non-priv submissions return `ParentLocked`. Privileged events (`Rot`, `Ror`, or `Dec`) extending `v_{d-1}.said` are rejected at merge per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal).
+4. **Decommissioned KEL is fully terminal** — no event of any kind lands. The seal-cap rejects every submission whose parent sits at-or-before `Dec`'s parent. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
+5. **Branch-scoped verifier input on `Rec`** — Rec verification is branch-scoped, not chain-scoped. The walker's running state never carries the divergent set across the archival boundary. See §Branch-scoped Rec verification below.
 
 ### Why sort priority matters
 
-The sort order is critical for gossip propagation. When fork siblings (e.g., a normal append + a contesting `Dec`) are submitted as a single batch, `partition_for_submission()` sorts them so non-privileged events come before privileged events, ensuring the merge processes the divergence-establishing event before the privileged event that triggers the contested transition. Two competing `ixn` events in a divergent fork get the same priority and break the tie by SAID — identical ordering across all nodes.
+The sort order is critical for deterministic merge processing. Two competing `ixn` events in a divergent fork get the same priority and break the tie by SAID — identical ordering across all nodes. The privileged sort priorities (`rot`, `ror`, `rec`, `dec`) keep priv events ordered after `ixn` within a batch for consistent merge-layer evaluation: a batch ending in a priv event whose landing would create or join a divergent set is rejected per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal); a clean linear-extension priv event lands normally.
 
 (Event kind values are version-qualified in serialized form — e.g., `kels/kel/v1/events/icp` — but the version qualifier is separate from the chain-event serial used elsewhere in this doc.)
 
@@ -267,7 +258,7 @@ This honors the one-divergent-generation-at-a-time invariant (see [../../../../p
 
 ## References
 
-- [event-log.md](event-log.md) — Chain lifecycle, recovery, contested-state transitions, decommission.
+- [event-log.md](event-log.md) — Chain lifecycle, recovery, privileged-event merge-layer rejection, decommission.
 - [reconciliation.md](reconciliation.md) — Multi-node correctness proof matrix.
 - [verification.md](verification.md) — `KelVerifier` algorithm.
 - [events.md](events.md) — Per-kind reference.

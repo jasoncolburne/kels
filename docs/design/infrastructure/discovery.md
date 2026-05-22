@@ -87,7 +87,7 @@ Assumption: identity material is unrecoverable (HSM lost; or no backup of identi
 3. The exclusion `Evl` lands at `v_N` and advances the IEL seal to `seal_serial = N`. The seal-cap rejects any subsequent submission whose parent sits at-or-before `v_{N-1}` — so a rotated-out `P_old` satisfier cannot land a competing privileged event extending `v_{N-1}` from this point forward. Any submission they construct against `v_N` itself requires `P_new` authority, which by definition they do not satisfy. The exclusion is structurally complete with a single `Evl`.
 4. From here, the §Adding a new peer flow for the new identity (steps 1–4).
 
-For federation-IEL-contested recovery (a different, harder case — the federation IEL itself is dead under its current prefix), see [federation.md §Recovery](federation.md#recovery).
+For federation-IEL-irreconcilable recovery (a different, harder case — the federation IEL itself is dead under its current prefix), see [federation.md §Recovery](federation.md#recovery).
 
 Gossip cannot do the initial pull itself in any of these modes: handshakes authorize against the federation IEL, which is exactly what a fresh node doesn't have. `transfer_*_events` is the bootstrap channel; gossip takes over once the node has the federation IEL and the address SELs locally.
 
@@ -120,11 +120,11 @@ The federation IEL's current [conforming policy pair](federation.md#federation-p
 | Federation IEL prefix mismatch (env override differs from compile-time default) | Logs a startup warning; treats the env value as authoritative. See [federation.md §Configuration](federation.md#configuration). |
 | Federation IEL not yet present locally (cold start, before bootstrap completes) | Node sleeps and polls the local sadstore for the configured prefix; participates as soon as state arrives via operator-coordinated `transfer_*_events`. See [§Bootstrapping the federation](#bootstrapping-the-federation) and [§Recovering a node: local stores lost, identity DB intact](#recovering-a-node-local-stores-lost-identity-db-intact). |
 | Federation IEL chain fails verification | Discovery rejects the chain; node refuses to participate. Operator intervention required. |
-| Federation IEL is contested-terminal | Federation is dead under that prefix. Recovery is via a fresh federation IEL inception + runtime override repoint. See [federation.md §Recovery](federation.md#recovery). |
+| Federation IEL is federation-disputed beyond reconciliation | Federation cannot extend forward under that prefix. Recovery is via a fresh federation IEL inception + runtime override repoint. See [federation.md §Recovery](federation.md#recovery). |
 | Address SEL missing for an authorized peer | Peer is treated as unreachable. Anti-entropy will fetch the address SEL on its next chance. |
 | Address SEL endpoints stale (peer not reachable at published addresses) | Connection failures only. Gossip mesh routes via other peers; the affected peer is effectively offline until it publishes new endpoints. |
 
-In all cases the failure mode is **fail-secure**: an unverifiable or contested chain causes the node to refuse rather than to fall back to a less-trusted source.
+In all cases the failure mode is **fail-secure**: an unverifiable or federation-disputed chain causes the node to refuse rather than to fall back to a less-trusted source.
 
 ## References
 

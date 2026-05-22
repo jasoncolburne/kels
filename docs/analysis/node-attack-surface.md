@@ -148,7 +148,7 @@ Not required for integrity or confidentiality — all inter-service data is publ
 
 There is no real-time detection of selective message dropping. Announcement injection causes unbounded HTTP fetches.
 
-- [x] Fix event partitioning for contested-state propagation — `partition_events` orders events so that the non-privileged fork-forming event lands in the batch ahead of any privileged event extending `v_{d-1}`. Per [§Privileged Divergence is Terminal](../design/protocol-doctrine.md#privileged-divergence-is-terminal), contested-terminal is reached when any privileged event (`Rot`/`Ror`/`Dec` on KEL; `Est`/`Sea`/`Dec` on SEL; `Evl`/`Dec` on IEL) lands in a divergent set; there is no dedicated `Cnt`/contest event in the protocol.
+- [x] Fix event partitioning for divergent-set propagation — `partition_events` orders events so that the non-privileged fork-forming event lands in the batch ahead of any subsequent recovery/archiving events. Per [§Privileged Divergence is Terminal](../design/protocol-doctrine.md#privileged-divergence-is-terminal), privileged events (`Rot`/`Ror`/`Dec` on KEL; `Sea`/`Dec` on SEL; `Evl`/`Dec` on IEL) whose landing would create or join a divergent set are rejected at the merge layer; there is no dedicated contest event in the protocol. Cross-node priv-vs-priv races surface at the federation layer via the irreconcilable-prefix table.
 - [x] Failed gossip fetches recorded as stale prefixes for anti-entropy repair (consolidated from former retry queue into the anti-entropy loop)
 
 ### ~~Bootstrap integrity (addresses residual risk 4)~~

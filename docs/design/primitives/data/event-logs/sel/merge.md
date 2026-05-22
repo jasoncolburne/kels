@@ -28,10 +28,9 @@ Server errors map to:
 
 | Error | Meaning | Chain state after |
 |---|---|---|
-| `Ok({applied: true, ...})` | Batch accepted | linear / divergent / contested / decommissioned per batch contents |
-| `ParentLocked { reason }` | Normal-event at-or-before `lastSealAdvancingEvent` in chain order (write-authorized but seal advanced past submitter's view) | unchanged |
+| `Ok({applied: true, ...})` | Batch accepted | linear / divergent / decommissioned per batch contents |
+| `ParentLocked { reason }` | Normal-event at-or-before `lastSealAdvancingEvent` in chain order (write-authorized but seal advanced past submitter's view), OR a privileged event whose landing would create or join a divergent set per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) | unchanged |
 | `RepairRequired` | Non-Rpr submission to a divergent chain | unchanged |
-| `ContestedSel` | Submission to a Contested chain (divergent set containing a privileged event) | terminal, unchanged |
 | `DecommissionedSel` | Submission to a chain with a `Dec` event in it. Decommissioned is fully terminal; the seal-cap rejects every submission whose parent sits at-or-before `v_{d-1}`. | terminal |
 | `IncompleteInception` | Verifier walked a chain whose tip is `Icp` (no v1 `Est`) | unchanged (rejected) |
 | `BadIdentityBinding(reason)` | `ielEvent` does not resolve to a real IEL event with matching prefix, or fails per-event parent-monotonic check | unchanged |
@@ -99,13 +98,12 @@ The rule lives inside the verifier (`SelVerifier::finish_internal`): if any bran
 ### 3. Terminal-State Gate
 
 ```
-if chain is Contested → reject ContestedSel
 if chain has any Dec event → reject DecommissionedSel
                              (the seal-cap rejects any submission whose parent
                               sits at-or-before Dec's parent.)
 ```
 
-Fires before all other routing. Contested and Decommissioned are both fully terminal; the seal-cap rejects every submission. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
+Fires before all other routing. Decommissioned is the only per-node terminal state on SEL; the seal-cap rejects every submission. Cross-node priv-vs-priv races resolve at the federation layer via the irreconcilable-prefix table (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
 
 ### 4. Deduplication
 
@@ -127,21 +125,23 @@ if is_repair:
                                     (can't truncate behind the seal)
     else                          → repair path (truncate_and_replace)
 elif is_decommission:
-    if is_divergent               → reject RepairRequired (unsealed) /
-                                    ParentLocked (sealed)
+    if Dec would land as a sibling of an existing event at v_d
+       (creating/joining a divergent set per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal))
+                                  → reject ParentLocked
     else                          → decommission path (insert + mark decommissioned)
+elif is_privileged (Sea) and event would create or join a divergent set:
+                                    → reject ParentLocked
+                                      (per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal))
 elif is_divergent:
-    if is_sealed                  → reject ParentLocked (Upd/Sea on sealed-divergent)
+    if is_sealed                  → reject ParentLocked (Upd on sealed-divergent)
     else                          → reject RepairRequired
 elif normal-event
        AND event is at-or-before `lastSealAdvancingEvent` in chain order
        AND kind-relevant authorization satisfied
        AND event.kind is non-terminal:
                                     → reject ParentLocked (algorithmic trigger)
-elif event creates a fork (overlap):
-                                    → insert single forking event; if the divergent
-                                      set contains a privileged event
-                                      (Sea or Dec), chain transitions to Contested
+elif event creates a fork (overlap, non-privileged Upd at v ≥ 2):
+                                    → insert single forking event; chain becomes Divergent
 else:
                                     → normal append
 ```
@@ -184,7 +184,7 @@ if event is at-or-before `lastSealAdvancingEvent` in chain order
    → return ParentLocked { reason: "..." }
 ```
 
-This fires when an authorized non-terminal event would land at or before the evaluation seal — meaning the seal has advanced past the submitter's view of the chain (someone with governance authority issued a `Sea`/`Rpr` while the submitter had stale state). The submitter has authority but cannot proceed via normal append; they must accept, contest, or abandon.
+This fires when an authorized non-terminal event would land at or before the evaluation seal — meaning the seal has advanced past the submitter's view of the chain (someone with governance authority issued a `Sea`/`Rpr` while the submitter had stale state). The submitter has authority but cannot proceed via normal append; they must accept the new state, decommission via `Dec`, or abandon and reincept.
 
 "Kind-relevant authorization" means each kind's gate uses the appropriate IEL-resolved policy: `Upd` checks `authPolicy`; `Sea` checks `governancePolicy`. Both kinds use the same algorithmic `ParentLocked` gate here — what differs is which policy the §1 check ran against.
 
@@ -192,9 +192,9 @@ The trigger fires after §1's anchoring check has already passed upstream. The `
 
 This mirrors KEL's `ParentLocked` shape: someone else used the privileged primitive (KEL: revealed the recovery key; SEL: advanced the seal), and safe normal-flow continuation is no longer possible. The submitter must accept the new state, decommission via `Dec`, or abandon and reincept. See [event-log.md §Algorithmic trigger — `ParentLocked`](event-log.md#algorithmic-trigger--ParentLocked).
 
-### 9. Overlap (non-divergent SEL, fork-creating event)
+### 9. Overlap (non-divergent SEL, fork-creating Upd)
 
-When a non-Rpr/Dec event chains from an event earlier than the current tip:
+When a non-Rpr/Dec/Sea event chains from an event earlier than the current tip:
 
 ```
 divergenceAncestor = first_branch_point.said    // the parent of v_d
@@ -202,7 +202,7 @@ insert single forking event (the first batch event that creates the fork)
 return applied: true, divergenceAncestor: Some(first_branch_point.said)
 ```
 
-Subsequent submissions return `RepairRequired` until owner repairs.
+Subsequent submissions return `RepairRequired` until owner repairs. A privileged event (`Sea` or `Dec`) reaching this shape is rejected by the routing block above per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal); only non-privileged `Upd` produces a fork at this path.
 
 ## Submit Handler Architecture
 
@@ -221,15 +221,13 @@ All SEL queries use `ORDER BY serial ASC, CASE kind ... END ASC, said ASC` for d
 
 ## Gossip Send-Side Partitioning (divergent SELs)
 
-Propagating a divergent SEL to a remote node requires more than canonical chain ordering. The receiver's submit handler routes batches by content predicates (`is_repair`, `is_contest`, `is_decommission`, divergent-rejection); a single batch that spans the divergence point with mixed kinds may route through `RepairRequired` or `ParentLocked`, blocking propagation. The SENDER partitions the chain into sub-batches the receiver will accept under its routing rules and sends them in sequence.
+Propagating a divergent SEL to a remote node requires more than canonical chain ordering. The receiver's submit handler routes batches by content predicates (`is_repair`, `is_decommission`, divergent-rejection); a single batch that spans the divergence point with mixed kinds may route through `RepairRequired` or `ParentLocked`, blocking propagation. The SENDER partitions the chain into sub-batches the receiver will accept under its routing rules and sends them in sequence.
 
 `send_divergent_sel_events` (analog of KEL's `send_divergent_events` at `lib/kels/src/types/kel/sync.rs:517`):
 
 1. Trace forward from each fork event to partition post-divergence events into `chain_a` and `chain_b`.
-2. Send **pre-divergence + non-privileged chain** as paged appends; each page lands as a non-divergent extension.
-3. Send **contesting chain** (ending in the privileged event — `Sea` or `Dec` — that triggered the contested transition) as an atomic single-page batch; lands at the receiver as a divergent extension at `v_d`, triggering privileged-divergence-is-terminal.
-
-For unrecovered divergence (no terminal in either branch — possible on SEL during the gossip-propagation window before resolution), the longer chain is sent as paged appends, then the fork event from the shorter chain establishes divergence at the receiver.
+2. Send the longer chain (pre-divergence + extension on one branch) as paged appends; each page lands as a non-divergent extension at the receiver.
+3. Send the fork event from the shorter chain as a single-event batch; it establishes divergence at the receiver via the overlap path.
 
 **Why send-side, not receive-side:** receive-side ordering can sort what arrived but cannot fix structural composition problems where the receiver's submit handler will reject a particular batch composition. The sender has full chain visibility and produces sequences that compose correctly given the receiver's routing rules. Same principle applies across KEL, IEL, and SEL — see [../iel/merge.md](../iel/merge.md#gossip-send-side-partitioning-divergent-iels) and [../kel/merge.md](../kel/merge.md).
 
@@ -239,7 +237,7 @@ For unrecovered divergence (no terminal in either branch — possible on SEL dur
 2. **Only one divergent event added** — when divergence is detected, only the first conflicting event is stored.
 3. **Seal-advance cap** — the seal-advance cap (`MINIMUM_PAGE_SIZE − 2 = 62`) caps non-seal-advancing runs; the next event after 62 must be a seal-advancing kind (`Est` at v=1, then `Sea` or `Rpr`; `Dec` enforces but does not advance).
 4. **Repair cannot truncate at or before the evaluation seal** — `truncate_and_replace` rejects fork-points at-or-before `lastSealAdvancingEvent` in chain order. A competing `Rpr` arriving against an existing seal-defining `Rpr` is rejected by the seal-cap (locked-portion bound); federation-level convergence for that race is handled at the infrastructure layer.
-5. **Contested and Decommissioned are both fully terminal** — no submission of any kind is accepted. The seal-cap rejects every submission whose parent sits at-or-before the terminal's parent. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
+5. **Decommissioned is fully terminal** — no submission of any kind is accepted. The seal-cap rejects every submission whose parent sits at-or-before `Dec`'s parent. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)). Privileged events whose landing would create or join a divergent set are uniformly rejected at the merge layer per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal).
 6. **Authorization is consumer-side** — the server does NOT verify anchor signatures on submit. Consumers verify the anchoring model when they use the data.
 7. **Inception is permissionless but bounded by batch rule** — Icp alone is rejected; `[Icp, Est, ...]` is the minimum legal inception batch.
 8. **Cross-chain bindings are path-agnostic** — same validation rules at submit, gossip, bootstrap, re-verification.

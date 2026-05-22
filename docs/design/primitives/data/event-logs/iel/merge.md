@@ -7,13 +7,13 @@ This document describes the submit / merge protocol used when new events are sub
 The submit handler integrates new events into an existing IEL while handling:
 - Normal event appends (`Evl`)
 - Idempotent resubmissions (dedup by SAID)
-- Divergence detection (conflicting events at the same serial) → chain transitions to contested-terminal directly
+- Merge-layer rejection of privileged events that would create or join a divergent set (per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal)) — since every IEL event is privileged, this is any second event at the same serial
 - Decommission (`Dec`) — terminal event ending the chain
 - Algorithmic `ParentLocked` for normal-event submissions that land at-or-before the evaluation seal on a linear chain (the seal has advanced past the submitter's view)
 
 Events are linked by their `previous` SAID. Authority is via the anchoring model — the server does NOT verify signatures on submit; consumers verify when they use the data. Every IEL event is governance-authorized: the chain's `governancePolicy` (declared at `Icp`, evolvable via `Evl`) is the gate for every kind including `Icp` itself. The chain's `authPolicy` is reserved for SEL Upd authorization through `ielEvent` binding (see [../sel/events.md](../sel/events.md)).
 
-**There is no `Rpr` kind on IEL** (see [event-log.md §Why no Rpr](event-log.md#why-no-rpr)). Divergence is preserved as data and is structurally terminal: the privileged-divergence-is-terminal rule fires immediately on any divergent set (every IEL event is privileged), and the chain transitions to Contested at the divergent serial with no protocol-level repair path. Operator recourse against compromise is described in [event-log.md §Operator recourse against compromise](event-log.md#operator-recourse-against-compromise).
+**There is no `Rpr` kind on IEL** (see [event-log.md §Why no Rpr](event-log.md#why-no-rpr)). Divergent sets cannot form locally on IEL — every IEL event is privileged, so a second event at the same serial is always privileged and the merge layer rejects it. There is no protocol-level repair path because there is no divergence to repair. Cross-node priv-vs-priv races surface at the federation layer via the irreconcilable-prefix table. Operator recourse against compromise is described in [event-log.md §Operator recourse against compromise](event-log.md#operator-recourse-against-compromise).
 
 ## Merge Outcome
 
@@ -28,14 +28,11 @@ Server errors map to:
 
 | Error | Meaning | Chain state after |
 |---|---|---|
-| `Ok({applied: true, ...})` | Batch accepted | linear / contested (= divergent) / decommissioned per batch contents |
-| `ParentLocked { reason }` | Normal-event submission at-or-before `lastSealAdvancingEvent` in chain order on a linear chain | unchanged |
-| `ContestedIel` | Submission to a chain that is divergent (= contested-terminal on IEL) | terminal, unchanged |
+| `Ok({applied: true, ...})` | Batch accepted | linear / decommissioned per batch contents |
+| `ParentLocked { reason }` | Normal-event submission at-or-before `lastSealAdvancingEvent` in chain order on a linear chain, OR a privileged event whose landing would create or join a divergent set per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) | unchanged |
 | `IelDecommissioned` | Submission to a chain with a `Dec` event in it | terminal, unchanged |
 | `NotImmunePolicy { policy }` | Icp or Evl introducing/evolving a non-immune policy | unchanged |
 | `InvalidIel(reason)` | Structural validation failure | unchanged |
-
-**Note on `ParentLocked` vs `ContestedIel`.** Divergent IEL is structurally contested-terminal, so divergent IEL → `ContestedIel`, not `ParentLocked`. The latter is reserved for the seal-cap case on linear IEL chains.
 
 ## Submit Flow
 
@@ -77,16 +74,13 @@ The policy-immunity gate makes chain stability structural: a non-immune policy c
 Before routing, check whether the chain is already terminal:
 
 ```
-if chain is divergent      → reject ContestedIel
-                             (every IEL event is privileged; any divergent set
-                              on IEL fires privileged-divergence-is-terminal.)
 if chain has any Dec event → reject IelDecommissioned
                              (Decommissioned is fully terminal; the seal-cap
                               rejects any subsequent submission whose parent
                               sits at-or-before Dec's parent.)
 ```
 
-These checks fire before any other routing, including dedup — terminal state means no further events of any kind. The IEL-specific `is_divergent → ContestedIel` rule reflects that divergent IEL is structurally contested-terminal: every IEL event is governance-authorized, so any divergent set contains a privileged event by definition.
+Fires before any other routing, including dedup — Decommissioned is the only per-node terminal state on IEL. There is no per-node Divergent state: divergent sets cannot form locally because every IEL event is privileged and the merge layer rejects any second event at the same serial per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). Cross-node priv-vs-priv races resolve at the federation layer via the irreconcilable-prefix table.
 
 ### 3. Deduplication
 
@@ -100,22 +94,24 @@ The handler inspects the post-dedup batch:
 let is_decommission = new_events.iter().any(|e| e.kind.is_decommission());
 
 (by §2 above, the chain reaching this routing block is necessarily linear:
- divergent IEL is contested-terminal and was rejected upstream)
+ IEL has no per-node Divergent state; the only terminal state is Decommissioned.)
 
+if event would create or join a divergent set at v_d
+        (the chain has an existing event at v_d and this event extends v_{d-1})
+                                       → reject ParentLocked
+                                         (per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal):
+                                          every IEL event is privileged; the second
+                                          event would form a divergent set containing
+                                          a privileged event.)
 if is_decommission → decommission path (insert + mark decommissioned)
 else if event is at-or-before `lastSealAdvancingEvent` in chain order
         AND policy satisfied AND non-terminal → reject ParentLocked
-else if event creates a fork (overlap) → insert single concurrent event at v_d;
-                                         the new 2-event divergent set is
-                                         privileged → chain transitions to
-                                         contested-terminal at this moment;
-                                         subsequent submissions return ContestedIel.
 else → normal append
 ```
 
-`Dec` lands only on a linear chain (divergent IEL is contested-terminal per §2).
+`Dec` lands only via clean linear extension of the chain's current tip.
 
-Note the absence of a repair branch — IEL has no `Rpr` kind. Divergent IEL is contested-terminal directly via the overlap path; there is no recoverable intermediate state. See [event-log.md §Divergence is Contested-Terminal](event-log.md#divergence-is-contested-terminal) and [event-log.md §Operator recourse against compromise](event-log.md#operator-recourse-against-compromise).
+Note the absence of a repair branch — IEL has no `Rpr` kind. Divergent sets cannot form locally on IEL, so there is no divergence to repair. Cross-node priv-vs-priv races surface at the federation layer via the irreconcilable-prefix table. See [event-log.md §Privileged-event merge-layer rejection](event-log.md#privileged-event-merge-layer-rejection) and [event-log.md §Operator recourse against compromise](event-log.md#operator-recourse-against-compromise).
 
 ### 5. Decommission Path
 
@@ -137,23 +133,23 @@ if event is at-or-before `lastSealAdvancingEvent` in chain order
    → return ParentLocked { reason: "..." }
 ```
 
-This fires when a write-authorized normal event would land at or before the evaluation seal — meaning the seal has advanced past the submitter's view of the chain. The submitter has authority but cannot proceed via normal append; they must accept the new state and re-submit at a higher serial, contest, or abandon.
+This fires when a write-authorized normal event would land at or before the evaluation seal — meaning the seal has advanced past the submitter's view of the chain. The submitter has authority but cannot proceed via normal append; they must accept the new state and re-submit at a higher serial, decommission via `Dec`, or abandon and reincept.
 
 (For IEL, "policy is satisfied" means the event's anchor passes against `trackedGovernancePolicy` — every IEL event including `Icp` is governance-authorized; `Icp` is self-endorsed under its declared policy.)
 
-### 7. Overlap (linear IEL, fork-creating event)
+### 7. Overlap (privileged-event merge-layer rejection)
 
-When a non-Dec event chains from an event earlier than the current tip, creating a 2-event divergent set at `v_d`:
+When a submitted event chains from an event earlier than the current tip — its acceptance would create a divergent set at `v_d` (the chain has an existing event at `v_d`) — the merge layer rejects the submission per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). Every IEL event is privileged, so any second event at the same serial is rejected without exception:
 
 ```
-divergenceAncestor = first_branch_point.said    // the parent of v_d
-insert single forking event (the first batch event that creates the fork)
-mark chain as contested (every IEL event is privileged → privileged-divergence-is-terminal
-fires immediately on the 2-event divergent set)
-return applied: true, divergenceAncestor: Some(first_branch_point.said)
+if event.previous corresponds to v_{d-1} and the chain has an existing event at v_d:
+    return ParentLocked
+        (the second event would create a divergent set containing a privileged event.
+         Cross-node priv-vs-priv races resolve at the federation layer
+         via the irreconcilable-prefix table.)
 ```
 
-The chain is contested-terminal as of the overlap insertion; all subsequent submissions are rejected by the §2 terminal-state gate with `ContestedIel`. There is no intermediate "divergent-but-not-yet-contested" state on IEL — the divergent set IS the contested state, by construction.
+The chain stays at its prior state. There is no intermediate divergent state on IEL.
 
 ## Submit Handler Architecture
 
@@ -170,31 +166,23 @@ The `IelVerification` token is the trusted context for routing decisions. The DB
 
 All IEL queries use `ORDER BY serial ASC, CASE kind ... END ASC, said ASC` for deterministic pagination across divergent events that share the same serial. The `CASE` expression uses `IdentityEventKind::sort_priority()` to order kinds at the same serial: `Icp` (0) → `Evl` (1) → `Dec` (2). `MINIMUM_PAGE_SIZE = 64` controls page size.
 
-## Gossip Send-Side Partitioning (divergent IELs)
+## Gossip propagation
 
-Propagating a divergent IEL chain to a remote node requires more than ordering events by canonical chain order. The receiver's submit handler rejects any submission to a divergent (= contested-terminal) chain with `ContestedIel`; a single batch that contains the divergent set as a whole would be split by the receiver's per-event routing — the first event in the batch lands as the chain's linear tip (clean append), and the second event triggers the §2 terminal-state gate AFTER the chain is already divergent locally. To make propagation succeed, the SENDER partitions the chain so each event lands in the routing-rule shape the receiver expects.
+IEL chains are linear per-node (Active or Decommissioned). Gossip propagation sends the chain as a single full-chain stream that the receiver applies as a normal append. Divergent sets cannot form locally on IEL, so there is no partitioning needed for divergent state.
 
-`send_divergent_iel_events` (analog of KEL's `send_divergent_events` at `lib/kels/src/types/kel/sync.rs:517`):
-
-1. Send **pre-divergence chain** (everything up to and including `v_{d-1}`) as paged appends. Each page lands as a non-divergent extension at the receiver.
-2. Send the **first divergent-set event** at `v_d` as a single-event batch — lands as a clean linear append at the receiver.
-3. Send the **second divergent-set event** at `v_d` as a single-event batch — falls through §4's overlap path, creates the divergent set at `v_d` on the receiver, and the chain transitions to contested-terminal there.
-
-After step 3 the receiver's chain mirrors the sender's exactly; both nodes converge on `effective_tail_said = hash_effective_said("contested:{prefix}")`. No archival on either side.
-
-**Why send-side, not receive-side:** receive-side ordering can sort what arrived but cannot fix structural composition problems where the receiver's submit handler will reject a particular batch composition. The sender has full chain visibility and can produce sequences that compose correctly given the receiver's routing rules. Relying on the receiver's submit handler to "figure out" complex batches is invariant-protection reasoning; the cryptographic-soundness argument is that the sender produces sequences that the routing rules accept by construction.
+Cross-node priv-vs-priv races (each `Evl`/`Dec` landing cleanly on its submitting node, gossip-arriving competing event rejected by the seal-cap) surface via the irreconcilable-prefix table at the infrastructure layer rather than as in-protocol partitioning. See [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205).
 
 ## Key Invariants
 
 1. **Events are sorted deterministically** — by `(serial, kind_priority, said)`. The SAID tiebreaker has no semantic meaning but ensures identical ordering across all nodes.
-2. **Only one divergent event added** — when divergence is detected, only the first conflicting event is stored (the chain is Contested as of that point — no kind extends past divergence on IEL).
-3. **No archival** — no `truncate_and_replace`, no archive table. History is encoded in the data, including divergent branches, forever.
-4. **Contested and Decommissioned are both fully terminal** — no submission of any kind is accepted on either state. The seal-cap rejects every submission whose parent sits at-or-before the terminal's parent. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
+2. **No divergent sets form locally** — every IEL event is privileged; a second event at the same serial is rejected at the merge layer per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). The chain is `{Active, Decommissioned}` per-node.
+3. **No archival** — no `truncate_and_replace`, no archive table. There is no divergent set to archive.
+4. **Decommissioned is fully terminal** — no submission of any kind is accepted. The seal-cap rejects every submission whose parent sits at-or-before `Dec`'s parent. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
 5. **Authorization is consumer-side** — the server does NOT verify anchor signatures on submit. Consumers verify the anchoring model when they use the data.
 
 ## References
 
-- [event-log.md](event-log.md) — Chain lifecycle (divergence is contested-terminal directly; no Rpr).
+- [event-log.md](event-log.md) — Chain lifecycle (privileged-event merge-layer rejection; no Rpr; no Divergent state).
 - [reconciliation.md](reconciliation.md) — Multi-node correctness proof matrix.
 - [verification.md](verification.md) — `IelVerifier` algorithm.
 - [events.md](events.md) — Per-kind reference.

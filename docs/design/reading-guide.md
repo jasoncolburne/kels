@@ -36,14 +36,14 @@ Three primitives (KEL, IEL, SEL) implement the doctrine in different shapes. Eac
 #### Internal order within each primitive
 
 1. **events.md** — per-kind reference. What event kinds exist, their field rules, the satisfaction model (what authorizes each kind). Most approachable entry point.
-2. **event-log.md** — chain lifecycle. States (active / divergent / contested / decommissioned), divergence semantics, terminal events, evaluation/recovery seal, trust caveats.
+2. **event-log.md** — chain lifecycle. States (active / divergent / decommissioned on KEL/SEL; active / decommissioned on IEL), divergence semantics, terminal events, evaluation/recovery seal, trust caveats.
 3. **merge.md** — submit handler routing. What the server does at the submit boundary; the kind-discriminator routing matrix.
 4. **verification.md** — verifier walk algorithm. The single-pass walk that produces the Verification token; chain-validity invariants.
 5. **reconciliation.md** — multi-node correctness matrix. The load-bearing proof that every state × submission × gossip combination terminates correctly and all nodes converge on the same effective SAID. This is the per-primitive proof of [protocol-doctrine.md §Federation Convergence](protocol-doctrine.md#federation-convergence).
 
 #### IEL — start here
 
-The simplest primitive. Every IEL event is governance-authorized (no auth-vs-governance asymmetry), there is no recovery or repair primitive (no `Rpr` — divergence is immediately contested-terminal), no content payload (the chain's data is its tracked policy state), and a small kind set (`Icp`, `Evl`, `Dec`). The cleanest place to internalize the core protocol concepts: cryptographically-linked event chains, divergence semantics, terminal events, evaluation seals, authorization via anchored policy.
+The simplest primitive. Every IEL event is governance-authorized (no auth-vs-governance asymmetry), there is no recovery or repair primitive (no `Rpr` — divergent sets cannot form locally on IEL because every event is privileged; the merge layer rejects any second event at the same serial per [protocol-doctrine.md §Privileged Divergence is Terminal](protocol-doctrine.md#privileged-divergence-is-terminal)), no content payload (the chain's data is its tracked policy state), and a small kind set (`Icp`, `Evl`, `Dec`). The cleanest place to internalize the core protocol concepts: cryptographically-linked event chains, divergence semantics, terminal events, evaluation seals, authorization via anchored policy.
 
 Read in order: [events.md](primitives/data/event-logs/iel/events.md) → [event-log.md](primitives/data/event-logs/iel/event-log.md) → [merge.md](primitives/data/event-logs/iel/merge.md) → [verification.md](primitives/data/event-logs/iel/verification.md) → [reconciliation.md](primitives/data/event-logs/iel/reconciliation.md).
 
@@ -59,13 +59,13 @@ New concepts you'll meet:
 - The recovery-revealing event class — `Rec`/`Ror`/`Dec` each reveal the recovery key; all three are dual-signed.
 - Within that class, `Rec` is the discriminator-based recovery primitive (the only kind that archives), with two parent shapes — branch-tip-extending and divergence-ancestor-extending. `Ror`/`Dec` are recovery-revealing but privileged (do not archive).
 - Cap doctrine — the seal-advance cap (the only protocol-enforced KEL cap) bounds how many non-seal-advancing events can sit between `Rec`/`Ror`/`Rot` (62, derived from `MINIMUM_PAGE_SIZE − 2`). Recovery-preimage rotation cadence (how often `Ror` should land to refresh the recovery commitment) is operator guidance, not a protocol-enforced cap — recovery keys are typically hardware-held and preimage-identified, so cadence reflects custody and threat model. The privileged class (`Rot`/`Ror`/`Dec` plus the archiving `Rec`) and the recovery-revealing class (`Rec`/`Ror`/`Dec`) are distinct but overlapping concepts; the seal-advance cap uses the privileged-plus-archiving membership.
-- The upgrade rule — a non-privileged divergent set plus a gossip-delivered privileged event upgrades the chain to contested. Applies to KEL and SEL; IEL is exempt because every IEL event is privileged.
+- Privileged-event merge-layer rejection — a privileged event whose landing would create or join a divergent set is rejected at the merge layer (see [protocol-doctrine.md §Privileged Divergence is Terminal](protocol-doctrine.md#privileged-divergence-is-terminal)). Divergent sets contain only non-privileged events. Cross-node priv-vs-priv races surface at the federation layer via the irreconcilable-prefix table.
 
 Read in order: [events.md](primitives/data/event-logs/kel/events.md) → [event-log.md](primitives/data/event-logs/kel/event-log.md) → [merge.md](primitives/data/event-logs/kel/merge.md) → [verification.md](primitives/data/event-logs/kel/verification.md) → [reconciliation.md](primitives/data/event-logs/kel/reconciliation.md). Supplemental: [recovery-workflow.md](primitives/data/event-logs/kel/recovery-workflow.md) for the operational walkthrough of `Rec` ceremonies.
 
 #### SEL — third
 
-The most complex primitive. SEL composes KEL anchoring and IEL governance to authorize content-bearing events. Kind set: `Icp`, `Est`, `Upd`, `Sea`, `Rpr`, `Dec` (sort-priority order). Unlike IEL, SEL events carry application content via a `content` field; unlike KEL, SEL events bind to a specific IEL event via an `ielEvent` field (the SAID of the IEL event whose policy authorizes the SEL event). Like KEL, SEL has a discriminator-based recovery primitive (`Rpr`, analogous to KEL's `Rec`) and inherits the upgrade rule.
+The most complex primitive. SEL composes KEL anchoring and IEL governance to authorize content-bearing events. Kind set: `Icp`, `Est`, `Upd`, `Sea`, `Rpr`, `Dec` (sort-priority order). Unlike IEL, SEL events carry application content via a `content` field; unlike KEL, SEL events bind to a specific IEL event via an `ielEvent` field (the SAID of the IEL event whose policy authorizes the SEL event). Like KEL, SEL has a discriminator-based recovery primitive (`Rpr`, analogous to KEL's `Rec`) and inherits the same privileged-event merge-layer rejection (a `Sea`/`Dec` whose landing would create or join a divergent set is rejected at merge).
 
 New concepts you'll meet:
 

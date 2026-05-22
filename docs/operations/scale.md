@@ -19,16 +19,16 @@ Scale in kels is structural, not protocol. A fail-secure decentralized framework
 
 ## Federation membership as identity-rooted SEL
 
-- Federation IEL declares `authPolicy` (admit) and `governancePolicy` (evict / contested-terminal).
+- Federation IEL declares `authPolicy` (admit) and `governancePolicy` (evict / dispute).
 - Peer admission: SEL `Icp` / `Upd` on the federation chain, content = peer record (KEL prefix, base_domain, gossip_addr, role).
-- Eviction: SEL `Dec`. Adversarial: contested-terminal via privileged-divergence-is-terminal — any privileged event landing in a divergent set fires the rule; there is no dedicated `Cnt`/contest event.
-- Concurrent admit races resolve through the same divergence / contested-terminal machinery as other SELs.
+- Eviction: SEL `Dec`. Adversarial: federation-level dispute via cross-node priv-vs-priv races surfaced via the irreconcilable-prefix table — see [../design/protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../design/protocol-doctrine.md#concurrent-privileged-event-races); per-node priv events whose landing would create or join a divergent set are rejected at the merge layer; no dedicated contest event.
+- Concurrent admit races resolve through the same divergence / federation-dispute machinery as other SELs.
 - Discovery: a node bootstraps from the federation IEL prefix and walks the SEL to learn the membership graph.
 
 ### What this buys vs Raft
 
 - No leader election, no quorum dance.
-- Fork-of-authority is first-class — two admin factions disagreeing on a peer manifest as divergence and (when a privileged event lands in the divergent set) resolve via contested-terminal via privileged-divergence-is-terminal.
+- Fork-of-authority is first-class — two admin factions disagreeing on a peer manifest as divergence; cross-node priv-vs-priv races between factions surface as federation-level dispute via the irreconcilable-prefix table.
 - Federations compose. A node can be a member of multiple federations by following multiple SELs; with Raft, each registry is its own world.
 
 ### What it costs
