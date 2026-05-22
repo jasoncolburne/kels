@@ -111,12 +111,14 @@ The SEL-specific ratchet that the bound composes with lives at [§Per-Event Pare
 
 #### Routing order
 
-The merge layer routes a submitted event through four rule scopes. The doctrine names the scopes in pedagogical order; implementations may execute checks in any order that produces equivalent outcomes (the scopes commute under valid input).
+The merge layer routes a submitted event through four rule scopes, in this **recommended structural order**:
 
 1. **Structural validation.** Per-kind field rules, SAID integrity, prefix consistency, signature shape, chain-linkage continuity. Any failure here is a structural error and the submission is rejected regardless of chain state.
 2. **Seal-cap.** The event's parent must sit at-or-after `lastSealAdvancingEvent` in chain order (`parent_serial >= seal_serial`). Submissions whose parent is in the locked portion are rejected — this is what enforces current-state-only authority (see [§Forks are Seal-Bounded](#forks-are-seal-bounded)). Terminal-state-gate rejections (Decommissioned) are subsumed: a Decommissioned chain's seal sits at the `Dec` event's serial, and the seal-cap rejects any subsequent submission.
 3. **Fork-detect.** The event's `(parent_said, serial)` is checked against the chain's existing events at that serial. If acceptance would produce a divergent set containing a privileged event — by joining an existing divergent set or by colliding with an existing event at the same serial when the candidate is privileged — the submission is rejected (see [§Privileged Divergence is Terminal](#privileged-divergence-is-terminal)). Non-privileged collisions form (or extend) a divergent set; archiving kinds route through their discriminator before this check fires.
 4. **Kind-specific.** Per-kind authorization (signing, dual-signing, anchor-tier checks against IEL-resolved policy), structural-extension rules (Sea-Sea strict-advance, inception batch rule, etc.), and chain-state effects (seal advance, decommission, repair).
+
+**Why this order — adversarial-input diagnostics.** The recommended order is chosen so attacker diagnostics name the structural cause-of-rejection correctly. Consider attacker input where `parent.serial < seal.serial` AND a conflicting event already exists at `candidate.serial`: seal-cap first (rule 2 before rule 3) emits `ParentLocked`, accurately naming the structural rule the attacker violated — the parent sits in the locked portion. Fork-detect first finds the conflict in locked history and rejects as an immutable-history violation, naming the symptom (the conflict in locked storage) rather than the cause (the attacker's parent reference into the locked portion). Implementations MAY commute scopes whose outcomes match under valid input, but SHOULD follow the recommended order so adversarial-input diagnostics correctly name the structural cause.
 
 The seal never forks (rule 2 plus rule 3 jointly). Divergent sets contain only non-privileged events. The chain's three states (Active, Divergent, Decommissioned) are the only states the rules can produce.
 
