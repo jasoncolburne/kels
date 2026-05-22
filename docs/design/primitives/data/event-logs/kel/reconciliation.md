@@ -280,7 +280,7 @@ The race participants — any pairing across `{Rec, Ror, Rot, Dec}` — produce 
 - The gossip-arriving competing event is rejected by the seal-cap with `ParentLocked` (or `KelDecommissioned` on the Dec'd side, equivalently a seal-cap rejection per [§Forks are Seal-Bounded](../../../../protocol-doctrine.md#forks-are-seal-bounded)).
 - Federation-level convergence is via #205.
 
-The Rot-vs-Rot, Ror-vs-Rot, and similar privileged-vs-privileged races are the rotation-tier adversary path: a tier-2 adversary (rotation preimage but not recovery preimage) can force federation-level non-convergence by racing `Rot` against an honest concurrent `Rot`/`Ror`. See [../../../../protocol-doctrine.md §Tier-2 adversary federation-non-convergence path](../../../../protocol-doctrine.md#tier-2-adversary-federation-non-convergence-path) for the structural framing and [../../../../../analysis/protocol-attack-surface.md §Key Compromise](../../../../../analysis/protocol-attack-surface.md#key-compromise-kel) for the worked threat scenarios.
+These priv-vs-priv races are the rotation-tier adversary path: a tier-2 adversary (rotation preimage alone) can force federation-level non-convergence by racing `Rot` against honest concurrent `Rot`/`Ror`; a tier-3 adversary (rotation preimage + recovery preimage) can do the same with `Ror`/`Rec`/`Dec`. See [../../../../protocol-doctrine.md §Rotation-tier adversary federation-non-convergence path](../../../../protocol-doctrine.md#rotation-tier-adversary-federation-non-convergence-path) for the structural framing covering both tiers, and [../../../../../analysis/protocol-attack-surface.md §Key Compromise](../../../../../analysis/protocol-attack-surface.md#key-compromise-kel) for the worked threat scenarios.
 
 ## References
 
