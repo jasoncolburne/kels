@@ -98,6 +98,7 @@ All nodes must eventually agree on the effective SAID for each prefix.
 | **Divergent** | `hash_effective_said("divergent:{prefix}")` — deterministic | ✓ (same value regardless of which fork events each node has; avoids wasted anti-entropy sync) |
 | **Recovered** | Tip event SAID | ✓ (identical clean chains) |
 | **Decommissioned** | `dec` event SAID | ✓ (identical chains across all Dec-first nodes when no competing event has been submitted). If a competing privileged event extending `Dec`'s parent has been submitted to a different node, the federation does NOT structurally converge — each node's seal-cap rejects the other's submission; convergence is via the infrastructure layer (see [#205](https://github.com/jasoncolburne/kels/issues/205)). |
+| **Irreconcilable** | `hash_effective_said("irreconcilable:{prefix}")` — federation-layer-sourced | ✓ (deterministic; same value across all nodes when the federation surfaces the prefix as in-dispute via the irreconcilable-prefix table per [#205](https://github.com/jasoncolburne/kels/issues/205); returned by the service in chain-query responses regardless of per-node tip state). |
 
 ## Archival
 

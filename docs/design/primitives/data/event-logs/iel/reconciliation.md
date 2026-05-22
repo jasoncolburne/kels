@@ -89,6 +89,7 @@ All nodes must eventually agree on the effective SAID for each prefix.
 |-------|---------------|------------|
 | **Active** | Tip event SAID | ✓ (identical chains after gossip when no priv-vs-priv race is in flight; otherwise per-node tips may differ and federation-layer dispute is surfaced via the irreconcilable-prefix table). |
 | **Decommissioned** | `Dec` event SAID | ✓ (identical chains across all Dec-first nodes when no competing event has been submitted). If a competing privileged event extending `Dec`'s parent has been submitted to a different node, the federation does NOT structurally converge — each node's seal-cap rejects the other's submission; convergence is via the infrastructure layer (see [#205](https://github.com/jasoncolburne/kels/issues/205)). |
+| **Irreconcilable** | `hash_effective_said("irreconcilable:{prefix}")` — federation-layer-sourced | ✓ (deterministic; same value across all nodes when the federation surfaces the prefix as in-dispute via the irreconcilable-prefix table per [#205](https://github.com/jasoncolburne/kels/issues/205); returned by the service in chain-query responses regardless of per-node tip state. IEL has no Divergent row by design — every IEL event is privileged, so divergent sets cannot form locally; the federation-layer dispute is the only across-node mismatch shape IEL produces.) |
 
 ## Edge Cases
 

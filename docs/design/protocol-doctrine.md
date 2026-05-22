@@ -508,7 +508,7 @@ The convergence model has three components:
 
 - **Gossip propagates events.** Anti-entropy and submission-time fan-out push new events to all nodes within a bounded propagation window. (The bound itself is operational and lives in [infrastructure/gossip.md](infrastructure/gossip.md); the doctrine asserts only the eventual property.)
 - **Semantic state is a function of the events.** Each node's view of a chain (Active / Divergent / Decommissioned, with which events at which serials) is computed deterministically from the events that node holds; identical event sets yield identical state.
-- **Effective-SAID determinism on divergent chains.** Where chain contents may differ across nodes (different surviving fork events on a non-privileged divergent chain), `hash_effective_said` computes a deterministic SAID that depends only on chain semantic state, not byte-identical content. Anti-entropy compares effective SAIDs and reconciles mismatches at the protocol layer.
+- **Effective-SAID determinism on divergent and irreconcilable chains.** Where chain contents may differ across nodes (different surviving fork events on a non-privileged divergent chain, or federation-layer dispute surfacing the prefix as irreconcilable), `hash_effective_said` computes a deterministic SAID that depends only on `(state, prefix)`, not on byte-identical content. Anti-entropy compares effective SAIDs to recognize matching state across nodes uniformly; protocol-layer reconciliation handles divergent chains via `Rec`/`Rpr`, while the irreconcilable-prefix table at the federation layer holds the source-of-truth for prefixes the protocol layer cannot reconcile (see [§Effective-SAID synthetic comparison](#effective-said-synthetic-comparison) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
 
 For cross-node disagreement that the protocol layer cannot resolve — priv-vs-priv races, priv-vs-non-priv state mismatches, non-priv-divergent vs Decommissioned — the irreconcilable-prefix table records signed attestations of per-node state, surfaces the disagreement to operators for out-of-band reconciliation, and provides the canonical "is this chain in dispute?" answer for consumers.
 
@@ -638,22 +638,24 @@ All verify-then-write paths hold PostgreSQL advisory locks for the duration of b
 
 The effective SAID is the canonical chain-tip representation across KEL, IEL, and SEL. It identifies the chain's current state and lets nodes recognize that state across the network without exchanging chain data.
 
-**Concrete vs synthetic representations.** Normal-tip chains carry the tip event's real SAID as the effective SAID; decommissioned chains (where `Dec` is the terminal tip — applies on KEL, SEL, and IEL) carry the `Dec` event's real SAID. One state has a synthetic representation:
+**Concrete vs synthetic representations.** Normal-tip chains carry the tip event's real SAID as the effective SAID; decommissioned chains (where `Dec` is the terminal tip — applies on KEL, SEL, and IEL) carry the `Dec` event's real SAID. Two states have synthetic representations:
 
 - `hash_effective_said("divergent:{prefix}")` — chain has competing branches at some serial (a non-privileged divergent set; recoverable via `Rec`/`Rpr`). Applies on KEL and SEL; IEL has no Divergent state (every IEL event is privileged, so divergent sets cannot form locally).
+- `hash_effective_said("irreconcilable:{prefix}")` — prefix is surfaced as in-dispute at the federation layer via the irreconcilable-prefix table (see [§Limit of the doctrine — concurrent privileged event races](#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)). Source-of-truth lives at the federation layer; the per-node chain state remains Active/Divergent/Decommissioned. The service returns this synthetic in chain-query responses when it knows the prefix is in dispute. Applies uniformly on KEL, SEL, and IEL.
 
-The synthetic depends only on `(state, prefix)` — no chain history, no fork point, no serial. Any node observing or computing the effective SAID can recognize the state from the SAID alone.
+The synthetics depend only on `(state, prefix)` — no chain history, no fork point, no serial. Any node observing or computing the effective SAID can recognize the state from the SAID alone.
 
-**Cross-node coordination primitive.** Effective SAIDs travel on the wire — gossip announcements, sadstore 422 responses, `/effective-said` endpoints. Two nodes whose chain `P` is divergent (perhaps at different fork points) compute and exchange the same `hash_effective_said("divergent:P")`. This is what lets nodes recognize each other's chain state without exchanging the chains themselves. Encoding fork-point or serial into the synthetic would break this — node A and node B couldn't recognize each other's "divergent for P" state if their representations differed.
+**Cross-node coordination primitive.** Effective SAIDs travel on the wire — gossip announcements, sadstore 422 responses, `/effective-said` endpoints. Two nodes whose chain `P` is divergent (perhaps at different fork points) compute and exchange the same `hash_effective_said("divergent:P")`; two nodes whose chain `P` is in federation-layer dispute compute and exchange the same `hash_effective_said("irreconcilable:P")`. This is what lets nodes recognize each other's state without exchanging the chains themselves. Encoding fork-point or serial into the synthetic would break this — node A and node B couldn't recognize each other's state if their representations differed.
 
 **State-detection algorithm.** Given an observed effective SAID for prefix `P`, a node tests:
 
 1. `observed == hash_effective_said("divergent:{P}")` → chain is divergent (recoverable via `Rec`/`Rpr`).
-2. Otherwise → chain has a real tip event SAID; the tip may be a normal extension event or a `Dec` (use per-event lookup to disambiguate).
+2. `observed == hash_effective_said("irreconcilable:{P}")` → prefix is in federation-layer dispute (per the irreconcilable-prefix table; #205).
+3. Otherwise → chain has a real tip event SAID; the tip may be a normal extension event or a `Dec` (use per-event lookup to disambiguate).
 
-A node observing an effective SAID for a prefix it has no local state for can still compute the synthetic: the function is `(state, prefix) → SAID` with no chain-history input. This is what lets a peer recognize "your chain `P` is divergent" purely from the observed SAID, even on first contact.
+A node observing an effective SAID for a prefix it has no local state for can still compute either synthetic: the function is `(state, prefix) → SAID` with no chain-history input. This is what lets a peer recognize "your chain `P` is divergent" or "your prefix `P` is in federation-layer dispute" purely from the observed SAID, even on first contact.
 
-Federation-level irreconcilability — cross-node disagreement on which privileged event a chain accepted — is surfaced via the irreconcilable-prefix table at the infrastructure layer (see [§Limit of the doctrine — concurrent privileged event races](#concurrent-privileged-event-races)), not as a per-primitive synthetic SAID.
+Federation-level irreconcilability — cross-node disagreement on which privileged event a chain accepted — is surfaced both via the irreconcilable-prefix table at the infrastructure layer (see [§Limit of the doctrine — concurrent privileged event races](#concurrent-privileged-event-races)) and as the per-primitive synthetic effective SAID `hash_effective_said("irreconcilable:{prefix}")` returned by the service in chain-query responses. The federation layer holds the source-of-truth for "is this prefix in dispute?"; the per-primitive synthetic is the wire-format surface that lets consumers recognize the disputed state from a single SAID.
 
 The canonical helper is `hash_effective_said(input: &str)` in `lib/kels/src/types/sync.rs`. Inputs follow the `"<state>:{prefix-qb64}"` shape.
 
