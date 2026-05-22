@@ -127,7 +127,7 @@ Both strategies use a single page fetch + resume-mode verifier trust gate + in-m
 
 ### 1. Rec landing as normal append (no divergence)
 
-A submitter with the recovery key submits `rec` to a non-divergent KEL (normal append, no divergence). This reveals the recovery key. Any future divergence at or after this `rec` cannot be resolved by `rec` (the recovery key is spent); only contested-termination via a privileged event remains.
+A submitter with the recovery key submits `rec` to a non-divergent KEL (normal append, no divergence). This reveals the recovery key. Any future divergence at or after this `rec` is unrecoverable per-node: the recovery key is spent, non-priv events that form divergent sets cannot be archived, and priv events that would create or join the divergent set are rejected at merge per [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal). Operator recourse is abandon-and-reincept under a new prefix.
 
 ```
 Pre-state (linear chain through s_N):

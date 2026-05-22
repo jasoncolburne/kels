@@ -198,7 +198,7 @@ Repair-event authorization is **HARD** at the merge layer per condition 2a. **Ge
 
 **Recourse against signing-key-only Rot takeover (KEL specifically)**: an adversary holding the signing key plus the rotation-key preimage at `v_N` (revealing their `Rot` at `v_N`) does not hold the recovery-key preimage committed by the prior establishment's `recoveryHash`. A `Rec` (branch-tip-extending on a divergent chain, or divergence-ancestor-extending where the divergence ancestor's commitments are still legitimate) — subject to the locked-portion bound (condition 2b) — resolves dual-sig against the parent's commitments; the legitimate party's recovery-key preimage satisfies, the adversary's does not. See [primitives/data/event-logs/kel/event-log.md §Recourse against signing-key-only Rot takeover](primitives/data/event-logs/kel/event-log.md#recourse-against-signing-key-only-rot-takeover) for the key-state walkthrough.
 
-The repair-event bound (condition 2b) together with the merge-layer's rejection of privileged events in or against divergent sets means that, on KEL/SEL, a chain's only exits from Divergent are archiving repair (back to Active) or operator reincept under a new prefix. The chain itself never advances forward under contested state per-node.
+The repair-event bound (condition 2b) together with the merge-layer's rejection of privileged events in or against divergent sets means that, on KEL/SEL, a chain's only exits from Divergent are archiving repair (back to Active) or operator reincept under a new prefix.
 
 ##### No dedicated termination-by-contest event
 
