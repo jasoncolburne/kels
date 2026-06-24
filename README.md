@@ -1,4 +1,4 @@
-# KELS - Key Event Log System
+# KELS [DEPRECATED] - Key Event Log System (migrated to [VDTI](https://github.com/jasoncolburne/vdti))
 
 KELS is a federated **Decentralized Verifiable Trust Infrastructure (DVTI)**, inspired by [KERI](https://github.com/WebOfTrust/keripy). The system composes three primitive chain types — **Key Event Logs** (KEL, the original primitive that gives the project its name), **Identity Event Logs** (IEL), and **SAD Event Logs** (SEL) — into a layered design for cryptographically verifiable identity, governance, and data management. Events are self-addressing (content-addressed via SAID) and cryptographically signed; the entire system is tamper-evident and end-verifiable.
 
